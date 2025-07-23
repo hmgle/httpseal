@@ -38,13 +38,15 @@ While Wireshark is the apex predator of the entire network ocean, HTTPSeal is th
 
 ## Architecture
 
-HTTPSeal combines several Linux technologies:
+HTTPSeal combines several Linux technologies to create isolated HTTPS interception:
 
 1. **Mount Namespace Isolation**: Creates isolated filesystem views using `unshare(CLONE_NEWNS)`
 2. **DNS Hijacking**: Replaces `/etc/resolv.conf` to redirect DNS queries to local server
 3. **IP Address Mapping**: Maps domain names to localhost addresses (127.0.0.0/8 range)
 4. **HTTPS Proxy**: Intercepts traffic on port 443 and performs MITM decryption
-5. **Certificate Authority**: Dynamically generates certificates for target domains
+5. **Certificate Authority**: Dynamically generates and caches certificates for target domains
+6. **Automatic CA Integration**: Merges HTTPSeal CA with system CA bundle in isolated namespace
+7. **Environment Configuration**: Sets SSL/TLS environment variables for seamless certificate usage
 
 ## Requirements
 
@@ -147,25 +149,33 @@ Other Options:
       --version                Show version
 ```
 
-## CA Certificate Installation
+## Certificate Management
 
-**IMPORTANT**: For HTTPS interception to work, you must install HTTPSeal's CA certificate:
+HTTPSeal uses **automatic certificate management** - no manual CA installation required:
 
-```bash
-# After first run, the CA certificate will be generated in ca/ca.crt
-# Install it to your system's trust store:
+### Fully Automatic Operation
 
-# For Ubuntu/Debian:
-sudo cp ca/ca.crt /usr/local/share/ca-certificates/httpseal-ca.crt
-sudo update-ca-certificates
+HTTPSeal **automatically** handles all certificate management when it runs:
 
-# For CentOS/RHEL:
-sudo cp ca/ca.crt /etc/pki/ca-trust/source/anchors/httpseal-ca.crt
-sudo update-ca-trust
+1. **CA Generation**: Creates a root CA certificate on first run (stored in `ca/` directory)
+2. **Bundle Merging**: Combines HTTPSeal's CA with your system's existing CA certificates  
+3. **Namespace Installation**: Uses bind mounts to overlay the merged CA bundle to `/etc/ssl/certs/ca-certificates.crt` **within the isolated namespace only**
+4. **Environment Setup**: Configures SSL/TLS environment variables (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, etc.)
+5. **Dynamic Certificates**: Generates domain-specific certificates on-demand during interception
 
-# For Firefox (separate trust store):
-# Import ca/ca.crt through Firefox Settings > Certificates
-```
+### Key Benefits
+
+✅ **Zero Manual Setup**: No need to install CA certificates in your system's trust store
+
+✅ **Complete Isolation**: CA certificates only exist within HTTPSeal's namespace - your system remains untouched
+
+✅ **Automatic Cleanup**: All certificate changes are automatically cleaned up when HTTPSeal exits
+
+✅ **Transparent Operation**: Target applications see the certificates as if they were system-installed
+
+### No System Pollution
+
+Unlike other HTTPS interception tools, HTTPSeal **never modifies your system's certificate store**. All certificate handling happens within the isolated namespace, providing both security and convenience.
 
 ## Development
 
@@ -210,14 +220,76 @@ make check-caps   # Check installed capabilities
 make help         # Show all available targets
 ```
 
+## Advantages and Limitations
+
+### Key Advantages
+
+✅ **Process-Specific Isolation**: Only intercepts traffic from processes launched by HTTPSeal - no system-wide impact
+
+✅ **Zero Configuration**: Target applications require no proxy settings or code modifications
+
+✅ **Namespace Security**: Uses Linux mount namespaces for secure isolation without polluting system environment
+
+✅ **Automatic Certificate Handling**: Completely automatic CA certificate management within isolated environment - no manual installation required
+
+✅ **Transparent Interception**: Applications connect normally to domain names without knowing they're monitored
+
+✅ **Advanced Filtering**: Domain filtering, content-type exclusions, and configurable output formats
+
+✅ **Capability-Based Security**: Requires specific Linux capabilities instead of full root access
+
+### Limitations
+
+❌ **Linux Only**: Completely platform-specific - cannot work on Windows, macOS, or other systems
+
+❌ **DNS Resolution Dependencies**: Applications using hard-coded IPs or custom DNS may bypass interception
+
+❌ **Single Process Scope**: Cannot intercept traffic from processes not launched by HTTPSeal
+
+❌ **Port 443 Monopolization**: Prevents other HTTPS services on localhost during operation
+
+❌ **Limited Protocol Support**: Focuses on HTTP/HTTPS - no WebSocket, HTTP/2, or HTTP/3 support
+
+❌ **Application Compatibility**: Some applications may not respect CA environment variables
+
+❌ **No Interactive Manipulation**: Read-only traffic logging - cannot modify requests/responses in real-time
+
+### Comparison with Other Tools
+
+| Feature | HTTPSeal | mitmproxy | Burp Suite |
+|---------|----------|-----------|-------------|
+| Process Isolation | ✅ Excellent | ❌ Global proxy | ❌ Global proxy |
+| Zero Config | ✅ Yes | ❌ Proxy setup required | ❌ Proxy setup required |
+| Cross-Platform | ❌ Linux only | ✅ Yes | ✅ Yes |
+| Interactive Editing | ❌ No | ✅ Yes | ✅ Yes |
+| CLI Automation | ✅ Perfect | ✅ Good | ❌ Limited |
+| Browser Traffic | ❌ Limited | ✅ Excellent | ✅ Excellent |
+
+### Best Use Cases
+
+🎯 **Perfect For**:
+- Linux development and debugging environments
+- CLI tool traffic analysis (`wget`, `curl`, custom applications)
+- CI/CD pipeline integration with traffic inspection
+- Malware analysis in isolated environments
+- API integration testing and debugging
+
+🚫 **Not Suitable For**:
+- Cross-platform development
+- Web browser traffic interception
+- Interactive request/response modification
+- Production environment monitoring
+- High-volume or enterprise traffic analysis
+
 ## Security Considerations
 
 > ⚠️ **WIP Security Warning**: As a work-in-progress tool, HTTPSeal may contain security vulnerabilities, incomplete input validation, or unstable certificate handling. Do NOT use in production environments or with sensitive data.
 
 - **Use only for authorized testing**: HTTPSeal performs MITM attacks on network traffic
-- **Development environments only**: Installing the CA certificate reduces system security
-- **Remove CA when done**: Uninstall the CA certificate when not actively using HTTPSeal
+- **Development environments only**: Designed for development and testing scenarios
 - **Capability model**: While safer than full root, `CAP_SYS_ADMIN` is still a powerful privilege
+- **Namespace isolation**: Changes are contained within process namespaces and automatically cleaned up
+- **No system modification**: HTTPSeal never modifies your system's certificate store or global network settings
 
 ## Example Output
 
