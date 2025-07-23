@@ -8,12 +8,12 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"github.com/httpseal/httpseal/internal/config"
-	"github.com/httpseal/httpseal/pkg/cert"
-	"github.com/httpseal/httpseal/pkg/dns"
-	"github.com/httpseal/httpseal/pkg/logger"
-	"github.com/httpseal/httpseal/pkg/namespace"
-	"github.com/httpseal/httpseal/pkg/proxy"
+	"github.com/hmgle/httpseal/internal/config"
+	"github.com/hmgle/httpseal/pkg/cert"
+	"github.com/hmgle/httpseal/pkg/dns"
+	"github.com/hmgle/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/pkg/namespace"
+	"github.com/hmgle/httpseal/pkg/proxy"
 )
 
 const (

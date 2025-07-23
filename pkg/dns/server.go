@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
-	"github.com/httpseal/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/pkg/logger"
 )
 
 // Server implements a DNS server for domain-to-localhost mapping

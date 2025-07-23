@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/httpseal/httpseal/internal/config"
+	"github.com/hmgle/httpseal/internal/config"
 )
 
 // TrafficLogger handles traffic logging with various output formats and filtering

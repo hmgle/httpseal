@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/httpseal/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/pkg/logger"
 )
 
 // OverlayManager handles OverlayFS mounting operations

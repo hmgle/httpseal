@@ -1,4 +1,4 @@
-module github.com/httpseal/httpseal
+module github.com/hmgle/httpseal
 
 go 1.24.4
 

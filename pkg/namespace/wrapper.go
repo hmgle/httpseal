@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/httpseal/httpseal/internal/config"
-	"github.com/httpseal/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/internal/config"
+	"github.com/hmgle/httpseal/pkg/logger"
 )
 
 // Wrapper handles process execution in isolated namespaces

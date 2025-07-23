@@ -57,7 +57,7 @@ HTTPSeal combines several Linux technologies:
 
 ```bash
 # Clone the repository
-git clone https://github.com/httpseal/httpseal.git
+git clone https://github.com/hmgle/httpseal.git
 cd httpseal
 
 # Build the binary

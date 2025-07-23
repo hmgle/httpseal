@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/httpseal/httpseal/pkg/cert"
-	"github.com/httpseal/httpseal/pkg/dns"
-	"github.com/httpseal/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/pkg/cert"
+	"github.com/hmgle/httpseal/pkg/dns"
+	"github.com/hmgle/httpseal/pkg/logger"
 )
 
 // Server implements an HTTPS proxy server for traffic interception
