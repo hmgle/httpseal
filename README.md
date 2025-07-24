@@ -43,7 +43,7 @@ While Wireshark is the apex predator of the entire network ocean, HTTPSeal is th
 
 HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP interception:
 
-1. **Mount Namespace Isolation**: Creates isolated filesystem views using `unshare(CLONE_NEWNS)`
+1. **Mount Namespace Isolation**: Uses user namespaces with UID mapping (`unshare --map-root-user`) for isolated filesystem views
 2. **DNS Hijacking**: Replaces `/etc/resolv.conf` to redirect DNS queries to local server
 3. **IP Address Mapping**: Maps domain names to localhost addresses (127.0.0.0/8 range)
 4. **HTTPS Proxy**: Intercepts traffic on port 443 and performs MITM decryption
@@ -54,11 +54,11 @@ HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP inter
 
 ## Requirements
 
-- **Operating System**: Linux
+- **Operating System**: Linux (kernel 3.8+ for user namespace support)  
 - **Go Version**: 1.24.4 or later
 - **Linux Capabilities**: 
-  - `CAP_SYS_ADMIN`: For creating mount namespaces
-  - `CAP_NET_BIND_SERVICE`: For binding to privileged ports
+  - `CAP_NET_BIND_SERVICE`: For binding to privileged ports (80, 443)
+  - HTTPSeal uses user namespace UID mapping for mount operations (no `CAP_SYS_ADMIN` required)
 
 ## Installation
 
@@ -87,8 +87,8 @@ go build -o httpseal ./cmd/httpseal
 # Install binary
 sudo cp httpseal /usr/local/bin/
 
-# Set required capabilities
-sudo setcap 'cap_net_bind_service,cap_sys_admin=+ep' /usr/local/bin/httpseal
+# Set required capability (only CAP_NET_BIND_SERVICE needed)
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
 ```
 
 ## Usage
@@ -344,7 +344,7 @@ make help         # Show all available targets
 
 ✅ **Advanced Filtering**: Domain filtering, content-type exclusions, and configurable output formats
 
-✅ **Capability-Based Security**: Requires specific Linux capabilities instead of full root access
+✅ **Reduced Privilege Requirements**: Uses user namespace UID mapping to eliminate need for `CAP_SYS_ADMIN`, only requires `CAP_NET_BIND_SERVICE`
 
 ### Limitations
 

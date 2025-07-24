@@ -55,13 +55,15 @@ lint:
 		echo "golangci-lint not installed, skipping lint"; \
 	fi
 
-# Install the binary with capabilities
+# Install the binary (only CAP_NET_BIND_SERVICE required)
 install: build
 	@echo "Installing $(BINARY_NAME)..."
 	@sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
-	@echo "Setting capabilities..."
-	@sudo setcap 'cap_net_bind_service,cap_sys_admin=+ep' /usr/local/bin/$(BINARY_NAME)
-	@echo "$(BINARY_NAME) installed to /usr/local/bin/ with required capabilities"
+	@echo "Setting capability..."
+	@sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/$(BINARY_NAME)
+	@echo "$(BINARY_NAME) installed to /usr/local/bin/ with CAP_NET_BIND_SERVICE capability"
+	@echo ""
+	@echo "HTTPSeal uses user namespaces for mount operations (no CAP_SYS_ADMIN required)."
 
 # Development build (with debug info)
 dev: deps
