@@ -63,6 +63,10 @@ func (l *StandardLogger) Error(format string, args ...interface{}) {
 
 // logWithLevel logs a message with the specified level
 func (l *StandardLogger) logWithLevel(level string, format string, args ...interface{}) {
+	// Skip logging if logger is nil (quiet mode)
+	if l.logger == nil {
+		return
+	}
 	timestamp := time.Now().Format("15:04:05")
 	prefix := fmt.Sprintf("[%s] %s: ", timestamp, level)
 	message := fmt.Sprintf(format, args...)

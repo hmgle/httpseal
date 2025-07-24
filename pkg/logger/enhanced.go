@@ -24,10 +24,11 @@ type TrafficLogger interface {
 // EnhancedLogger implements both Logger and TrafficLogger interfaces
 type EnhancedLogger struct {
 	*StandardLogger
-	config     *config.Config
-	outputFile *os.File
-	csvWriter  *csv.Writer
-	sessionID  string
+	config       *config.Config
+	outputFile   *os.File
+	csvWriter    *csv.Writer
+	systemLogFile *os.File
+	sessionID    string
 }
 
 // NewEnhanced creates a new enhanced logger with traffic logging capabilities
@@ -49,10 +50,17 @@ func NewEnhanced(cfg *config.Config) (TrafficLogger, error) {
 		sessionID:      generateSessionID(),
 	}
 	
-	// Setup file output if specified
+	// Setup traffic file output if specified
 	if cfg.OutputFile != "" {
 		if err := enhanced.setupFileOutput(); err != nil {
-			return nil, fmt.Errorf("failed to setup file output: %w", err)
+			return nil, fmt.Errorf("failed to setup traffic file output: %w", err)
+		}
+	}
+	
+	// Setup system log file output if specified
+	if cfg.LogFile != "" {
+		if err := enhanced.setupSystemLogFile(); err != nil {
+			return nil, fmt.Errorf("failed to setup system log file: %w", err)
 		}
 	}
 	
@@ -71,8 +79,8 @@ func (l *EnhancedLogger) setupFileOutput() error {
 	switch l.config.OutputFormat {
 	case config.FormatCSV:
 		l.csvWriter = csv.NewWriter(l.outputFile)
-		// Write CSV header
-		header := []string{"timestamp", "session_id", "domain", "method", "url", "status_code", "status", "content_type", "request_size", "response_size", "duration_ms"}
+		// Write CSV header with request/response body columns
+		header := []string{"timestamp", "session_id", "domain", "method", "url", "status_code", "status", "content_type", "request_size", "response_size", "duration_ms", "request_headers", "response_headers", "request_body", "response_body"}
 		if err := l.csvWriter.Write(header); err != nil {
 			return err
 		}
@@ -81,6 +89,25 @@ func (l *EnhancedLogger) setupFileOutput() error {
 		// JSON format doesn't need special initialization
 	case config.FormatText:
 		// Text format doesn't need special initialization
+	}
+	
+	return nil
+}
+
+// setupSystemLogFile initializes system log file output
+func (l *EnhancedLogger) setupSystemLogFile() error {
+	var err error
+	l.systemLogFile, err = os.OpenFile(l.config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	
+	// Redirect base logger to system log file instead of stdout
+	if l.StandardLogger.logger != nil {
+		l.StandardLogger.logger = log.New(l.systemLogFile, "", log.LstdFlags)
+	} else if l.config.LogFile != "" && l.config.Quiet {
+		// Even in quiet mode, allow system logging to file
+		l.StandardLogger.logger = log.New(l.systemLogFile, "", log.LstdFlags)
 	}
 	
 	return nil
@@ -111,8 +138,11 @@ func (l *EnhancedLogger) LogTraffic(record *TrafficRecord) error {
 
 // shouldLogTraffic checks if traffic should be logged based on filters
 func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
-	// Check log level
-	if l.config.LogLevel == config.LogLevelNone {
+	// Check if either console or file logging is enabled
+	consoleEnabled := l.config.LogLevel != config.LogLevelNone && !l.config.Quiet
+	fileEnabled := l.config.FileLogLevel != config.LogLevelNone && l.outputFile != nil
+	
+	if !consoleEnabled && !fileEnabled {
 		return false
 	}
 	
@@ -230,6 +260,11 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 
 // logTrafficToFile logs traffic to file in the specified format
 func (l *EnhancedLogger) logTrafficToFile(record *TrafficRecord) error {
+	// Skip if file logging level is none
+	if l.config.FileLogLevel == config.LogLevelNone {
+		return nil
+	}
+	
 	switch l.config.OutputFormat {
 	case config.FormatJSON:
 		return l.logTrafficAsJSON(record)
@@ -253,6 +288,28 @@ func (l *EnhancedLogger) logTrafficAsJSON(record *TrafficRecord) error {
 
 // logTrafficAsCSV logs traffic as CSV format
 func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
+	// Format headers as JSON strings for CSV
+	requestHeaders, _ := json.Marshal(record.Request.Headers)
+	responseHeaders, _ := json.Marshal(record.Response.Headers)
+	
+	// Apply file log level for body inclusion
+	requestBody := ""
+	responseBody := ""
+	if l.config.FileLogLevel == config.LogLevelVerbose {
+		requestBody = record.Request.Body
+		responseBody = record.Response.Body
+		
+		// Apply size limits
+		if l.config.MaxBodySize > 0 {
+			if len(requestBody) > l.config.MaxBodySize {
+				requestBody = requestBody[:l.config.MaxBodySize] + "... (truncated)"
+			}
+			if len(responseBody) > l.config.MaxBodySize {
+				responseBody = responseBody[:l.config.MaxBodySize] + "... (truncated)"
+			}
+		}
+	}
+	
 	row := []string{
 		record.Timestamp.Format(time.RFC3339),
 		record.SessionID,
@@ -265,6 +322,10 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		strconv.Itoa(record.Request.BodySize),
 		strconv.Itoa(record.Response.BodySize),
 		strconv.FormatInt(record.Duration.Milliseconds(), 10),
+		string(requestHeaders),
+		string(responseHeaders),
+		requestBody,
+		responseBody,
 	}
 	
 	if err := l.csvWriter.Write(row); err != nil {
@@ -276,32 +337,172 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 
 // logTrafficAsText logs traffic as human-readable text
 func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
-	text := fmt.Sprintf("[%s] %s -> %s %s %s -> %s %s (%s, %d bytes, %v)\n",
-		record.Timestamp.Format("15:04:05"),
-		record.SessionID,
-		record.Domain,
-		record.Request.Method,
-		record.Request.URL,
-		record.Response.Proto,
-		record.Response.Status,
-		record.Response.ContentType,
-		record.Response.BodySize,
-		record.Duration,
-	)
+	var text string
+	
+	// Use detailed format based on file log level, regardless of quiet mode for file output
+	switch l.config.FileLogLevel {
+	case config.LogLevelMinimal:
+		text = fmt.Sprintf("[%s] >> %s %s\n[%s] << %s %s\n",
+			record.Timestamp.Format("15:04:05"), record.Request.Method, record.Request.URL,
+			record.Timestamp.Format("15:04:05"), record.Response.Proto, record.Response.Status)
+	case config.LogLevelNormal:
+		text = fmt.Sprintf("[%s] >> Request to %s\n%s %s %s\nHost: %s\nUser-Agent: %s\n\n[%s] << Response from %s\n%s %s\nContent-Type: %s\nContent-Length: %d\n\n",
+			record.Timestamp.Format("15:04:05"), record.Domain,
+			record.Request.Method, record.Request.URL, record.Request.Proto,
+			record.Request.Host, record.Request.Headers["User-Agent"],
+			record.Timestamp.Format("15:04:05"), record.Domain,
+			record.Response.Proto, record.Response.Status,
+			record.Response.ContentType, record.Response.BodySize)
+	case config.LogLevelVerbose:
+		text = l.formatVerboseTrafficTextForFile(record)
+	default:
+		// Fallback to summary format
+		text = fmt.Sprintf("[%s] %s -> %s %s %s -> %s %s (%s, %d bytes, %v)\n",
+			record.Timestamp.Format("15:04:05"),
+			record.SessionID,
+			record.Domain,
+			record.Request.Method,
+			record.Request.URL,
+			record.Response.Proto,
+			record.Response.Status,
+			record.Response.ContentType,
+			record.Response.BodySize,
+			record.Duration,
+		)
+	}
 	
 	_, err := l.outputFile.WriteString(text)
 	return err
 }
 
+// formatVerboseTrafficText formats traffic in verbose mode for console output
+func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string {
+	var builder strings.Builder
+	
+	// Request section
+	builder.WriteString(fmt.Sprintf("[%s] >> Request to %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
+	builder.WriteString(fmt.Sprintf("%s %s %s\n", record.Request.Method, record.Request.URL, record.Request.Proto))
+	builder.WriteString(fmt.Sprintf("Host: %s\n", record.Request.Host))
+	
+	// Request headers
+	for name, value := range record.Request.Headers {
+		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+	}
+	
+	// Request body
+	if record.Request.Body != "" {
+		body := record.Request.Body
+		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
+			body = body[:l.config.MaxBodySize] + "... (truncated)"
+		}
+		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
+	}
+	
+	builder.WriteString("\n")
+	
+	// Response section
+	builder.WriteString(fmt.Sprintf("[%s] << Response from %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
+	builder.WriteString(fmt.Sprintf("%s %s\n", record.Response.Proto, record.Response.Status))
+	
+	// Response headers
+	for name, value := range record.Response.Headers {
+		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+	}
+	
+	// Response body
+	if record.Response.Body != "" {
+		contentType := strings.ToLower(record.Response.ContentType)
+		
+		// Check if content should be logged based on type
+		isTextContent := strings.Contains(contentType, "text/") ||
+			strings.Contains(contentType, "application/json") ||
+			strings.Contains(contentType, "application/xml") ||
+			strings.Contains(contentType, "application/javascript") ||
+			strings.Contains(contentType, "application/x-www-form-urlencoded")
+		
+		if isTextContent || contentType == "" {
+			body := record.Response.Body
+			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
+				body = body[:l.config.MaxBodySize] + "... (truncated)"
+			}
+			builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
+		} else {
+			builder.WriteString(fmt.Sprintf("Response body: %d bytes of binary data (%s)\n", record.Response.BodySize, record.Response.ContentType))
+		}
+	}
+	
+	builder.WriteString("\n")
+	return builder.String()
+}
+
+// formatVerboseTrafficTextForFile formats traffic in verbose mode for file output
+func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) string {
+	var builder strings.Builder
+	
+	// Request section
+	builder.WriteString(fmt.Sprintf("[%s] >> Request to %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
+	builder.WriteString(fmt.Sprintf("%s %s %s\n", record.Request.Method, record.Request.URL, record.Request.Proto))
+	builder.WriteString(fmt.Sprintf("Host: %s\n", record.Request.Host))
+	
+	// Request headers
+	for name, value := range record.Request.Headers {
+		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+	}
+	
+	// Request body (always include for file output in verbose mode)
+	if record.Request.Body != "" {
+		body := record.Request.Body
+		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
+			body = body[:l.config.MaxBodySize] + "... (truncated)"
+		}
+		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
+	}
+	
+	builder.WriteString("\n")
+	
+	// Response section
+	builder.WriteString(fmt.Sprintf("[%s] << Response from %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
+	builder.WriteString(fmt.Sprintf("%s %s\n", record.Response.Proto, record.Response.Status))
+	
+	// Response headers
+	for name, value := range record.Response.Headers {
+		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+	}
+	
+	// Response body (always include for file output in verbose mode)
+	if record.Response.Body != "" {
+		body := record.Response.Body
+		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
+			body = body[:l.config.MaxBodySize] + "... (truncated)"
+		}
+		builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
+	}
+	
+	builder.WriteString("\n")
+	return builder.String()
+}
+
 // Close closes the traffic logger and flushes any buffered data
 func (l *EnhancedLogger) Close() error {
+	var lastErr error
+	
 	if l.csvWriter != nil {
 		l.csvWriter.Flush()
 	}
+	
 	if l.outputFile != nil {
-		return l.outputFile.Close()
+		if err := l.outputFile.Close(); err != nil {
+			lastErr = err
+		}
 	}
-	return nil
+	
+	if l.systemLogFile != nil {
+		if err := l.systemLogFile.Close(); err != nil {
+			lastErr = err
+		}
+	}
+	
+	return lastErr
 }
 
 // Helper functions

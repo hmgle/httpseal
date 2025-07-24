@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/hmgle/httpseal/pkg/cert"
 	"github.com/hmgle/httpseal/pkg/dns"
 	"github.com/hmgle/httpseal/pkg/logger"
+	"github.com/hmgle/httpseal/pkg/mirror"
 )
 
 // Server implements an HTTPS proxy server for traffic interception
@@ -23,18 +25,20 @@ type Server struct {
 	dnsServer    *dns.Server
 	logger       logger.Logger
 	trafficLogger logger.TrafficLogger
+	mirrorServer *mirror.Server
 	wg           sync.WaitGroup
 	stopCh       chan struct{}
 }
 
 // NewServer creates a new HTTPS proxy server
-func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger) *Server {
+func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server) *Server {
 	return &Server{
 		port:         port,
 		ca:           ca,
 		dnsServer:    dnsServer,
 		logger:       trafficLogger, // TrafficLogger implements Logger interface
 		trafficLogger: trafficLogger,
+		mirrorServer: mirrorServer,
 		stopCh:       make(chan struct{}),
 	}
 }
@@ -117,8 +121,11 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 	// Handle HTTP requests over this TLS connection
 	for {
+		// Create a buffered reader for parsing HTTP requests
+		reader := bufio.NewReader(tlsConn)
+		
 		// Parse the HTTP request
-		req, err := http.ReadRequest(bufio.NewReader(tlsConn))
+		req, err := http.ReadRequest(reader)
 		if err != nil {
 			if err == io.EOF {
 				break // Client closed connection
@@ -127,12 +134,23 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 			return
 		}
 
-		// Log the request
-		s.logRequest(req, realDomain)
+		// Read and preserve request body for logging and forwarding  
+		var requestBody []byte
+		if req.Body != nil {
+			requestBody, err = io.ReadAll(req.Body)
+			if err != nil {
+				s.logger.Error("Failed to read request body: %v", err)
+				return
+			}
+			req.Body.Close()
+		}
 
-		// Log and forward the request to the real server
+		// Log the request with body
+		s.logRequestWithBody(req, realDomain, requestBody)
+
+		// Forward the request to the real server
 		startTime := time.Now()
-		resp, err := s.forwardRequest(req, realDomain)
+		resp, err := s.forwardRequest(req, realDomain, requestBody)
 		duration := time.Since(startTime)
 		
 		if err != nil {
@@ -141,7 +159,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 		}
 
 		// Capture response and create traffic record
-		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration)
+		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration, requestBody)
 		if err != nil {
 			s.logger.Error("Failed to capture response: %v", err)
 			return
@@ -150,6 +168,19 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 		// Log the traffic record
 		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
 			s.logger.Error("Failed to log traffic: %v", err)
+		}
+
+		// Mirror the traffic for Wireshark analysis (if mirror server is enabled)
+		if s.mirrorServer != nil {
+			s.mirrorServer.MirrorTraffic(
+				realDomain,
+				trafficRecord.Request.Method,
+				trafficRecord.Request.URL,
+				trafficRecord.Request.Body,
+				trafficRecord.Response.Body,
+				trafficRecord.Response.StatusCode,
+				resp.Header,
+			)
 		}
 
 		// Send the response back to the client
@@ -181,9 +212,15 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 }
 
 // forwardRequest forwards the request to the real server
-func (s *Server) forwardRequest(req *http.Request, realDomain string) (*http.Response, error) {
+func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody []byte) (*http.Response, error) {
+	// Create a new request body from the preserved request body bytes
+	var body io.Reader
+	if len(requestBody) > 0 {
+		body = bytes.NewReader(requestBody)
+	}
+	
 	// Create a new request to avoid modifying the original
-	newReq, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
+	newReq, err := http.NewRequest(req.Method, req.URL.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new request: %w", err)
 	}
@@ -216,8 +253,8 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string) (*http.Res
 	return client.Do(newReq)
 }
 
-// logRequest logs the HTTP request details
-func (s *Server) logRequest(req *http.Request, domain string) {
+// logRequestWithBody logs the HTTP request details including body
+func (s *Server) logRequestWithBody(req *http.Request, domain string, requestBody []byte) {
 	s.logger.Info(">> Request to %s", domain)
 	s.logger.Info("%s %s %s", req.Method, req.URL.Path, req.Proto)
 	s.logger.Info("Host: %s", req.Host)
@@ -228,25 +265,27 @@ func (s *Server) logRequest(req *http.Request, domain string) {
 			s.logger.Debug("%s: %s", name, value)
 		}
 	}
+	
+	// Log request body if present
+	if len(requestBody) > 0 {
+		s.logger.Info("Request body (%d bytes):", len(requestBody))
+		s.logger.Debug("Body content: %s", string(requestBody))
+	}
+	
 	s.logger.Info("")
 }
 
 // captureTrafficAndCreateRecord captures the response and creates a traffic record
-func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Response, domain string, duration time.Duration) ([]byte, *logger.TrafficRecord, error) {
+func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Response, domain string, duration time.Duration, requestBodyBytes []byte) ([]byte, *logger.TrafficRecord, error) {
 	// Read the response body
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Read request body if present
-	var requestBody string
-	var requestBodySize int
-	if req.Body != nil {
-		reqBodyBytes, _ := io.ReadAll(req.Body)
-		requestBody = string(reqBodyBytes)
-		requestBodySize = len(reqBodyBytes)
-	}
+	// Use pre-read request body
+	requestBody := string(requestBodyBytes)
+	requestBodySize := len(requestBodyBytes)
 
 	// Extract response body content with size limit
 	responseBody := string(bodyBytes)

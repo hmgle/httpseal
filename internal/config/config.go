@@ -27,6 +27,7 @@ type Config struct {
 	DNSPort     int
 	ProxyPort   int
 	CADir       string
+	KeepCA      bool         // Keep CA directory after exit
 	
 	// Command execution
 	Command     string
@@ -35,9 +36,15 @@ type Config struct {
 	// Traffic logging and output
 	OutputFile          string       // File to save traffic logs
 	OutputFormat        OutputFormat // Output format (text, json, csv)
-	LogLevel            LogLevel     // Traffic logging verbosity
+	LogLevel            LogLevel     // Console traffic logging verbosity
+	FileLogLevel        LogLevel     // File traffic logging verbosity (can be different from console)
+	LogFile             string       // File to save system logs (separate from traffic)
 	Quiet               bool         // Suppress console output
 	MaxBodySize         int          // Maximum body size to log (bytes), 0 = unlimited
 	FilterDomains       []string     // Only log these domains (empty = all)
 	ExcludeContentTypes []string     // Exclude these content types
+	
+	// Wireshark integration
+	EnableMirror bool // Enable HTTP mirror server for Wireshark analysis
+	MirrorPort   int  // HTTP mirror server port
 }

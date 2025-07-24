@@ -35,6 +35,7 @@ While Wireshark is the apex predator of the entire network ocean, HTTPSeal is th
 - **Real-time traffic display**: Shows HTTP/HTTPS request and response details
 - **Multiple output formats**: Text, JSON, and CSV with configurable verbosity
 - **Advanced filtering**: Domain filtering, content-type exclusion, body size limits
+- **🔥 Wireshark Integration**: HTTP mirror server for real-time Wireshark analysis of decrypted HTTPS traffic
 
 ## Architecture
 
@@ -119,6 +120,96 @@ httpseal --filter-domain api.github.com --max-body-size 1024 -- curl https://api
 
 # Minimal logging level
 httpseal --log-level minimal -o summary.txt -- wget https://httpbin.org/json
+
+# 🦈 Wireshark Integration - Mirror HTTPS traffic as HTTP
+httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+
+# Custom mirror port for Wireshark analysis
+httpseal --enable-mirror --mirror-port 9090 -- wget https://httpbin.org/get
+```
+
+## 🌊 Wireshark Integration (HTTP Mirror)
+
+HTTPSeal features a **revolutionary HTTP Mirror Server** that creates real-time HTTP replicas of decrypted HTTPS traffic, enabling seamless Wireshark analysis without complex TLS certificate configuration.
+
+### How It Works
+
+```
+Client → HTTPSeal (HTTPS Proxy) → Real Server
+             ↓
+    HTTP Mirror Server (localhost:8080)
+             ↓
+        Wireshark Capture
+```
+
+1. **HTTPS Interception**: HTTPSeal intercepts and decrypts HTTPS traffic as usual
+2. **HTTP Mirroring**: Decrypted traffic is replicated as plain HTTP on a local port
+3. **Wireshark Analysis**: Capture the mirror port to see all HTTPS traffic in plain text
+
+### Quick Start with Wireshark
+
+```bash
+# Terminal 1: Start Wireshark and capture on loopback interface
+wireshark -i lo -f "tcp port 8080"
+
+# Terminal 2: Run HTTPSeal with mirror enabled
+httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+```
+
+### Mirror Features
+
+- **🔥 Zero TLS Complexity**: No certificate imports, no key files - just capture HTTP traffic
+- **📊 Perfect Protocol Support**: Works with all TLS versions (1.2, 1.3, modern cipher suites)
+- **🎯 Real-time Streaming**: Traffic appears in Wireshark instantly as it's intercepted
+- **🏷️ Enhanced Headers**: Original domain info preserved with `X-HTTPSeal-*` headers
+- **⚡ High Performance**: Minimal overhead, efficient goroutine-based mirroring
+
+### Mirror Options
+
+```bash
+# Enable mirror server (default port 8080)
+httpseal --enable-mirror -- <command>
+
+# Custom mirror port
+httpseal --enable-mirror --mirror-port 9090 -- <command>
+
+# Combine with other options
+httpseal --enable-mirror -v --format json -o traffic.json -- <command>
+```
+
+### Wireshark Configuration
+
+1. **Start Wireshark**: Capture on loopback interface (`lo`)
+2. **Apply Filter**: Use `tcp port 8080` (or your custom mirror port)
+3. **Run HTTPSeal**: Use `--enable-mirror` flag
+4. **Watch Magic**: See decrypted HTTPS traffic as readable HTTP in Wireshark!
+
+### Why This Is Revolutionary
+
+**Traditional Wireshark TLS Decryption**:
+- ❌ Requires RSA private keys
+- ❌ Only works with RSA key exchange (not modern ECDHE)
+- ❌ Complex certificate management
+- ❌ Limited TLS 1.3 support
+
+**HTTPSeal Mirror Approach**:
+- ✅ Works with ALL TLS versions and cipher suites
+- ✅ Zero certificate configuration
+- ✅ Real-time streaming
+- ✅ Perfect for modern HTTPS (TLS 1.3, ECDHE, etc.)
+- ✅ Combines HTTPSeal's process isolation with Wireshark's analysis power
+
+### Example Mirror Headers
+
+The mirrored HTTP traffic includes special headers for traceability:
+
+```http
+GET /users/octocat HTTP/1.1
+Host: api.github.com
+X-HTTPSeal-Original-Host: api.github.com
+X-HTTPSeal-Mirror-ID: 12345
+X-HTTPSeal-Timestamp: 2024-01-15T10:30:45Z
+User-Agent: curl/7.68.0
 ```
 
 ### Command Line Options
@@ -131,6 +222,10 @@ Network Options:
       --dns-port int           DNS server port (default 53)
       --proxy-port int         HTTPS proxy port (default 443)
       --ca-dir string          Certificate authority directory (default "ca")
+
+Wireshark Integration:
+      --enable-mirror          Enable HTTP mirror server for Wireshark analysis
+      --mirror-port int        HTTP mirror server port (default 8080)
 
 Output Options:
   -o, --output string          Output file for traffic logs
@@ -188,6 +283,7 @@ httpseal/
 │   ├── cert/              # Certificate authority and management
 │   ├── dns/               # DNS server component
 │   ├── logger/            # Enhanced logging functionality
+│   ├── mirror/            # HTTP mirror server for Wireshark integration
 │   ├── namespace/         # Process wrapper and namespace handling
 │   ├── proxy/             # HTTPS proxy server
 │   └── mount/             # OverlayFS mounting operations
@@ -256,23 +352,27 @@ make help         # Show all available targets
 
 ### Comparison with Other Tools
 
-| Feature | HTTPSeal | mitmproxy | Burp Suite |
-|---------|----------|-----------|-------------|
-| Process Isolation | ✅ Excellent | ❌ Global proxy | ❌ Global proxy |
-| Zero Config | ✅ Yes | ❌ Proxy setup required | ❌ Proxy setup required |
-| Cross-Platform | ❌ Linux only | ✅ Yes | ✅ Yes |
-| Interactive Editing | ❌ No | ✅ Yes | ✅ Yes |
-| CLI Automation | ✅ Perfect | ✅ Good | ❌ Limited |
-| Browser Traffic | ❌ Limited | ✅ Excellent | ✅ Excellent |
+| Feature | HTTPSeal | mitmproxy | Burp Suite | Wireshark |
+|---------|----------|-----------|-------------|-----------|
+| Process Isolation | ✅ Excellent | ❌ Global proxy | ❌ Global proxy | ❌ System-wide |
+| Zero Config | ✅ Yes | ❌ Proxy setup required | ❌ Proxy setup required | ❌ Certificate import |
+| Wireshark Integration | 🔥 **Native** | ❌ No | ❌ No | ✅ Self |
+| Cross-Platform | ❌ Linux only | ✅ Yes | ✅ Yes | ✅ Yes |
+| Interactive Editing | ❌ No | ✅ Yes | ✅ Yes | ❌ No |
+| CLI Automation | ✅ Perfect | ✅ Good | ❌ Limited | ⚠️ Limited |
+| TLS 1.3 Support | ✅ Full | ✅ Full | ✅ Full | ❌ Limited |
+| Browser Traffic | ❌ Limited | ✅ Excellent | ✅ Excellent | ✅ Good |
 
 ### Best Use Cases
 
 🎯 **Perfect For**:
 - Linux development and debugging environments
 - CLI tool traffic analysis (`wget`, `curl`, custom applications)
+- **Wireshark-powered network analysis** with zero TLS complexity
 - CI/CD pipeline integration with traffic inspection
 - Malware analysis in isolated environments
 - API integration testing and debugging
+- **Security research** requiring both process isolation and protocol analysis
 
 🚫 **Not Suitable For**:
 - Cross-platform development
@@ -293,6 +393,7 @@ make help         # Show all available targets
 
 ## Example Output
 
+### Standard Mode
 ```
 [15:30:42] INFO: Starting HTTPSeal v0.1.0
 [15:30:42] INFO: Listening on 0.0.0.0:443 (HTTPS), DNS on 127.0.53.1:53
@@ -308,6 +409,18 @@ make help         # Show all available targets
 [15:30:43] INFO: HTTP/1.1 200 OK
 [15:30:43] INFO: Content-Type: application/json; charset=utf-8
 [15:30:43] INFO: Content-Length: 1234
+----------------------------------------------------
+```
+
+### With Wireshark Integration
+```
+[15:30:42] INFO: Starting HTTPSeal v0.1.0
+[15:30:42] INFO: HTTP Mirror Server enabled on port 8080 for Wireshark analysis
+[15:30:42] INFO: Listening on 0.0.0.0:443 (HTTPS), DNS on 127.0.53.1:53, Mirror on 127.0.0.1:8080
+[15:30:42] INFO: Configure Wireshark to capture on interface 'lo' with filter 'tcp port 8080'
+----------------------------------------------------
+🦈 Wireshark users: Start capturing on loopback interface with filter "tcp port 8080"
+   All HTTPS traffic will appear as readable HTTP in Wireshark!
 ----------------------------------------------------
 ```
 
