@@ -31,6 +31,10 @@ var (
 	caDir   string
 	keepCA  bool
 	
+	// HTTP traffic interception
+	enableHTTP bool
+	httpPort   int
+	
 	// Traffic logging and output
 	outputFile          string
 	outputFormat        string
@@ -108,6 +112,10 @@ Examples:
 	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: auto-generated temp dir)")
 	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (useful for debugging or reuse)")
 	
+	// HTTP traffic interception
+	rootCmd.Flags().BoolVar(&enableHTTP, "enable-http", false, "Enable HTTP traffic interception (default: disabled)")
+	rootCmd.Flags().IntVar(&httpPort, "http-port", 80, "HTTP proxy port")
+	
 	// Traffic logging and output
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output traffic to file (automatically uses verbose level for complete data)")
 	rootCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text, json, csv")
@@ -164,6 +172,10 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		ProxyPort:   proxyPort,
 		CADir:       effectiveCADir,
 		KeepCA:      keepCA,
+		
+		// HTTP traffic interception
+		EnableHTTP:  enableHTTP,
+		HTTPPort:    httpPort,
 		
 		// Command execution
 		Command:     args[0],
@@ -231,6 +243,15 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	
 	// Initialize HTTPS proxy
 	proxyServer := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer)
+	
+	// Initialize HTTP proxy (if enabled)
+	var httpProxyServer *proxy.Server
+	if cfg.EnableHTTP {
+		httpProxyServer = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer)
+		if !cfg.Quiet {
+			log.Info("HTTP proxy enabled on port %d", cfg.HTTPPort)
+		}
+	}
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -255,9 +276,21 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start HTTPS proxy: %w", err)
 	}
 	defer proxyServer.Stop()
+	
+	// Start HTTP proxy (if enabled)
+	if httpProxyServer != nil {
+		if err := httpProxyServer.Start(); err != nil {
+			return fmt.Errorf("failed to start HTTP proxy: %w", err)
+		}
+		defer httpProxyServer.Stop()
+	}
 
-	if cfg.EnableMirror {
+	if cfg.EnableMirror && cfg.EnableHTTP {
+		log.Info("Listening on 0.0.0.0:%d (HTTPS), 0.0.0.0:%d (HTTP), DNS on %s:%d, Mirror on 127.0.0.1:%d", cfg.ProxyPort, cfg.HTTPPort, cfg.DNSIP, cfg.DNSPort, cfg.MirrorPort)
+	} else if cfg.EnableMirror {
 		log.Info("Listening on 0.0.0.0:%d (HTTPS), DNS on %s:%d, Mirror on 127.0.0.1:%d", cfg.ProxyPort, cfg.DNSIP, cfg.DNSPort, cfg.MirrorPort)
+	} else if cfg.EnableHTTP {
+		log.Info("Listening on 0.0.0.0:%d (HTTPS), 0.0.0.0:%d (HTTP), DNS on %s:%d", cfg.ProxyPort, cfg.HTTPPort, cfg.DNSIP, cfg.DNSPort)
 	} else {
 		log.Info("Listening on 0.0.0.0:%d (HTTPS), DNS on %s:%d", cfg.ProxyPort, cfg.DNSIP, cfg.DNSPort)
 	}
@@ -371,6 +404,15 @@ func validateFlags() error {
 	}
 	if enableMirror && mirrorPort == dnsPort {
 		return fmt.Errorf("mirror-port cannot be the same as dns-port")
+	}
+	if enableHTTP && httpPort == proxyPort {
+		return fmt.Errorf("http-port cannot be the same as proxy-port")
+	}
+	if enableHTTP && httpPort == dnsPort {
+		return fmt.Errorf("http-port cannot be the same as dns-port")
+	}
+	if enableHTTP && enableMirror && httpPort == mirrorPort {
+		return fmt.Errorf("http-port cannot be the same as mirror-port")
 	}
 	
 	return nil

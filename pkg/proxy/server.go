@@ -17,7 +17,7 @@ import (
 	"github.com/hmgle/httpseal/pkg/mirror"
 )
 
-// Server implements an HTTPS proxy server for traffic interception
+// Server implements an HTTPS/HTTP proxy server for traffic interception
 type Server struct {
 	port         int
 	listener     net.Listener
@@ -28,6 +28,7 @@ type Server struct {
 	mirrorServer *mirror.Server
 	wg           sync.WaitGroup
 	stopCh       chan struct{}
+	isHTTPS      bool // true for HTTPS, false for HTTP
 }
 
 // NewServer creates a new HTTPS proxy server
@@ -40,6 +41,21 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 		trafficLogger: trafficLogger,
 		mirrorServer: mirrorServer,
 		stopCh:       make(chan struct{}),
+		isHTTPS:      true,
+	}
+}
+
+// NewHTTPServer creates a new HTTP proxy server
+func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server) *Server {
+	return &Server{
+		port:         port,
+		ca:           nil, // No CA needed for HTTP
+		dnsServer:    dnsServer,
+		logger:       trafficLogger, // TrafficLogger implements Logger interface
+		trafficLogger: trafficLogger,
+		mirrorServer: mirrorServer,
+		stopCh:       make(chan struct{}),
+		isHTTPS:      false,
 	}
 }
 
@@ -52,7 +68,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to listen on port %d: %w", s.port, err)
 	}
 
-	s.logger.Debug("HTTPS proxy server started on 0.0.0.0:%d", s.port)
+	if s.isHTTPS {
+		s.logger.Debug("HTTPS proxy server started on 0.0.0.0:%d", s.port)
+	} else {
+		s.logger.Debug("HTTP proxy server started on 0.0.0.0:%d", s.port)
+	}
 
 	go s.acceptLoop()
 	return nil
@@ -103,8 +123,17 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 		return
 	}
 
-	s.logger.Info(">> Connection to %s (mapped from %s)", realDomain, destIP)
+	if s.isHTTPS {
+		s.logger.Info(">> HTTPS Connection to %s (mapped from %s)", realDomain, destIP)
+		s.handleHTTPSConnection(clientConn, realDomain)
+	} else {
+		s.logger.Info(">> HTTP Connection to %s (mapped from %s)", realDomain, destIP)
+		s.handleHTTPConnection(clientConn, realDomain)
+	}
+}
 
+// handleHTTPSConnection handles HTTPS connections with TLS
+func (s *Server) handleHTTPSConnection(clientConn net.Conn, realDomain string) {
 	// Create TLS configuration with dynamic certificate
 	tlsConfig, err := s.createTLSConfig(realDomain)
 	if err != nil {
@@ -120,9 +149,20 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	}
 
 	// Handle HTTP requests over this TLS connection
+	s.handleHTTPRequests(tlsConn, realDomain, "https")
+}
+
+// handleHTTPConnection handles plain HTTP connections
+func (s *Server) handleHTTPConnection(clientConn net.Conn, realDomain string) {
+	// Handle HTTP requests directly (no TLS)
+	s.handleHTTPRequests(clientConn, realDomain, "http")
+}
+
+// handleHTTPRequests handles HTTP requests over the given connection
+func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme string) {
 	for {
 		// Create a buffered reader for parsing HTTP requests
-		reader := bufio.NewReader(tlsConn)
+		reader := bufio.NewReader(conn)
 		
 		// Parse the HTTP request
 		req, err := http.ReadRequest(reader)
@@ -150,7 +190,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 		// Forward the request to the real server
 		startTime := time.Now()
-		resp, err := s.forwardRequest(req, realDomain, requestBody)
+		resp, err := s.forwardRequest(req, realDomain, requestBody, scheme)
 		duration := time.Since(startTime)
 		
 		if err != nil {
@@ -184,7 +224,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 		}
 
 		// Send the response back to the client
-		if err := s.writeResponseWithBody(tlsConn, resp, bodyBytes); err != nil {
+		if err := s.writeResponseWithBody(conn, resp, bodyBytes); err != nil {
 			s.logger.Error("Failed to write response: %v", err)
 			resp.Body.Close()
 			return
@@ -212,7 +252,7 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 }
 
 // forwardRequest forwards the request to the real server
-func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody []byte) (*http.Response, error) {
+func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody []byte, scheme string) (*http.Response, error) {
 	// Create a new request body from the preserved request body bytes
 	var body io.Reader
 	if len(requestBody) > 0 {
@@ -235,7 +275,7 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	// Update the request to target the real domain
 	newReq.Host = realDomain
 	newReq.URL.Host = realDomain
-	newReq.URL.Scheme = "https"
+	newReq.URL.Scheme = scheme
 	
 	// Clear RequestURI as it's not allowed in client requests
 	newReq.RequestURI = ""

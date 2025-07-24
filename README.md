@@ -3,16 +3,17 @@
 > ⚠️ **Work In Progress (WIP)** ⚠️  
 > HTTPSeal is currently under active development and not yet ready for production use. Features may be incomplete, unstable, or subject to breaking changes. Use at your own risk and expect potential issues. Contributions and feedback are welcome!
 
-HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS traffic from specific processes using namespace isolation and DNS hijacking.
+HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS/HTTP traffic from specific processes using namespace isolation and DNS hijacking.
 
 ## About the Name
 
 **HTTPSeal** combines two powerful concepts:
 
 - **HTTPS**: The secure web protocol this tool specializes in intercepting and analyzing
+- **HTTP**: Plain text web protocol also supported for complete traffic visibility
 - **Seal**: Representing the secure **encapsulation** and **isolation** of process traffic within a controlled environment
 
-The name embodies the tool's core philosophy: creating a "sealed" environment where HTTPS traffic can be precisely monitored without affecting the broader system—like sealing a process in an isolated chamber for examination.
+The name embodies the tool's core philosophy: creating a "sealed" environment where HTTPS/HTTP traffic can be precisely monitored without affecting the broader system—like sealing a process in an isolated chamber for examination.
 
 ### A Playful Nod to Wireshark
 
@@ -24,30 +25,32 @@ Just as Wireshark combines:
 HTTPSeal playfully follows suit:
 - **HTTPS** (secure web protocol) + **Seal** (an agile marine hunter that "seals" its prey)
 
-While Wireshark is the apex predator of the entire network ocean, HTTPSeal is the specialized hunter that focuses precisely on HTTPS streams within isolated process territories. Think of it as evolving from a broad-spectrum network shark to a precision-targeted process seal! 🌊
+While Wireshark is the apex predator of the entire network ocean, HTTPSeal is the specialized hunter that focuses precisely on HTTPS/HTTP streams within isolated process territories. Think of it as evolving from a broad-spectrum network shark to a precision-targeted process seal! 🌊
 
 ## Features
 
 - **Process-specific interception**: Only captures traffic from processes launched by HTTPSeal
 - **Zero-configuration transparency**: Target applications require no proxy configuration
-- **HTTPS/TLS decryption**: Performs MITM with dynamic certificate generation
+- **HTTPS/TLS decryption**: Performs MITM with dynamic certificate generation for encrypted traffic
+- **HTTP plain text handling**: Direct interception and analysis of unencrypted HTTP traffic
 - **Non-root execution**: Uses Linux Capabilities instead of full root privileges
 - **Real-time traffic display**: Shows HTTP/HTTPS request and response details
 - **Multiple output formats**: Text, JSON, and CSV with configurable verbosity
 - **Advanced filtering**: Domain filtering, content-type exclusion, body size limits
-- **🔥 Wireshark Integration**: HTTP mirror server for real-time Wireshark analysis of decrypted HTTPS traffic
+- **🔥 Wireshark Integration**: HTTP mirror server for real-time Wireshark analysis of decrypted HTTPS and plain HTTP traffic
 
 ## Architecture
 
-HTTPSeal combines several Linux technologies to create isolated HTTPS interception:
+HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP interception:
 
 1. **Mount Namespace Isolation**: Creates isolated filesystem views using `unshare(CLONE_NEWNS)`
 2. **DNS Hijacking**: Replaces `/etc/resolv.conf` to redirect DNS queries to local server
 3. **IP Address Mapping**: Maps domain names to localhost addresses (127.0.0.0/8 range)
 4. **HTTPS Proxy**: Intercepts traffic on port 443 and performs MITM decryption
-5. **Certificate Authority**: Dynamically generates and caches certificates for target domains
-6. **Automatic CA Integration**: Merges HTTPSeal CA with system CA bundle in isolated namespace
-7. **Environment Configuration**: Sets SSL/TLS environment variables for seamless certificate usage
+5. **HTTP Proxy**: Intercepts plain HTTP traffic on port 80 (when enabled)
+6. **Certificate Authority**: Dynamically generates and caches certificates for target domains (HTTPS only)
+7. **Automatic CA Integration**: Merges HTTPSeal CA with system CA bundle in isolated namespace
+8. **Environment Configuration**: Sets SSL/TLS environment variables for seamless certificate usage
 
 ## Requirements
 
@@ -93,44 +96,47 @@ sudo setcap 'cap_net_bind_service,cap_sys_admin=+ep' /usr/local/bin/httpseal
 ### Basic Usage
 
 ```bash
-# Intercept wget traffic
+# Intercept HTTPS traffic (default behavior)
 httpseal -- wget https://api.github.com/users/octocat
 
-# Intercept curl traffic
-httpseal -- curl -v https://httpbin.org/get
+# Intercept HTTP traffic (requires --enable-http flag)
+httpseal --enable-http -- curl http://httpbin.org/get
 
-# Intercept any command
-httpseal -- python3 -c "import urllib.request; urllib.request.urlopen('https://example.com')"
+# Intercept both HTTPS and HTTP traffic
+httpseal --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
+
+# Intercept any command with mixed traffic
+httpseal --enable-http -- python3 -c "import urllib.request; urllib.request.urlopen('http://example.com')"
 ```
 
 ### Advanced Usage
 
 ```bash
-# Verbose mode with all traffic details
-httpseal -v -- curl -v https://httpbin.org/get
+# Verbose mode with all traffic details (HTTPS and HTTP)
+httpseal -v --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
 
-# Save traffic to file in JSON format
-httpseal -o traffic.json --format json -- wget https://baidu.com
+# Save mixed traffic to file in JSON format
+httpseal --enable-http -o traffic.json --format json -- wget http://httpbin.org/get https://api.github.com/users/octocat
 
-# Quiet mode - only save to file, no console output
-httpseal -q -o traffic.log -- curl https://api.github.com/repos/golang/go
+# HTTP-only monitoring with custom port
+httpseal --enable-http --http-port 8080 -q -o http-traffic.log -- some-http-app
 
-# Filter specific domains and limit body size
-httpseal --filter-domain api.github.com --max-body-size 1024 -- curl https://api.github.com/users/octocat
+# Filter specific domains and limit body size (works for both protocols)
+httpseal --enable-http --filter-domain httpbin.org --max-body-size 1024 -- curl http://httpbin.org/get https://httpbin.org/json
 
-# Minimal logging level
-httpseal --log-level minimal -o summary.txt -- wget https://httpbin.org/json
+# Minimal logging level for both HTTP and HTTPS
+httpseal --enable-http --log-level minimal -o summary.txt -- wget http://httpbin.org/json
 
-# 🦈 Wireshark Integration - Mirror HTTPS traffic as HTTP
-httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+# 🦈 Wireshark Integration - Mirror both HTTPS and HTTP traffic
+httpseal --enable-http --enable-mirror -- curl https://api.github.com/users/octocat http://httpbin.org/get
 
-# Custom mirror port for Wireshark analysis
-httpseal --enable-mirror --mirror-port 9090 -- wget https://httpbin.org/get
+# Custom mirror port for Wireshark analysis of mixed traffic
+httpseal --enable-http --enable-mirror --mirror-port 9090 -- wget https://httpbin.org/get http://httpbin.org/headers
 ```
 
 ## 🌊 Wireshark Integration (HTTP Mirror)
 
-HTTPSeal features a **revolutionary HTTP Mirror Server** that creates real-time HTTP replicas of decrypted HTTPS traffic, enabling seamless Wireshark analysis without complex TLS certificate configuration.
+HTTPSeal features a **revolutionary HTTP Mirror Server** that creates real-time HTTP replicas of decrypted HTTPS traffic and plain HTTP traffic, enabling seamless Wireshark analysis without complex TLS certificate configuration.
 
 ### How It Works
 
@@ -222,6 +228,10 @@ Network Options:
       --dns-port int           DNS server port (default 53)
       --proxy-port int         HTTPS proxy port (default 443)
       --ca-dir string          Certificate authority directory (default "ca")
+
+HTTP Traffic Interception:
+      --enable-http            Enable HTTP traffic interception (default: disabled)
+      --http-port int          HTTP proxy port (default 80)
 
 Wireshark Integration:
       --enable-mirror          Enable HTTP mirror server for Wireshark analysis
@@ -320,6 +330,8 @@ make help         # Show all available targets
 
 ### Key Advantages
 
+✅ **Dual Protocol Support**: Handles both HTTPS (with TLS decryption) and plain HTTP traffic interception
+
 ✅ **Process-Specific Isolation**: Only intercepts traffic from processes launched by HTTPSeal - no system-wide impact
 
 ✅ **Zero Configuration**: Target applications require no proxy settings or code modifications
@@ -342,7 +354,7 @@ make help         # Show all available targets
 
 ❌ **Single Process Scope**: Cannot intercept traffic from processes not launched by HTTPSeal
 
-❌ **Port 443 Monopolization**: Prevents other HTTPS services on localhost during operation
+❌ **Port Monopolization**: Prevents other HTTPS services on localhost:443 during operation (and HTTP services on localhost:80 when HTTP interception is enabled)
 
 ❌ **Limited Protocol Support**: Focuses on HTTP/HTTPS - no WebSocket, HTTP/2, or HTTP/3 support
 
@@ -356,6 +368,7 @@ make help         # Show all available targets
 |---------|----------|-----------|-------------|-----------|
 | Process Isolation | ✅ Excellent | ❌ Global proxy | ❌ Global proxy | ❌ System-wide |
 | Zero Config | ✅ Yes | ❌ Proxy setup required | ❌ Proxy setup required | ❌ Certificate import |
+| HTTP/HTTPS Support | ✅ Both protocols | ✅ Both protocols | ✅ Both protocols | ✅ Both protocols |
 | Wireshark Integration | 🔥 **Native** | ❌ No | ❌ No | ✅ Self |
 | Cross-Platform | ❌ Linux only | ✅ Yes | ✅ Yes | ✅ Yes |
 | Interactive Editing | ❌ No | ✅ Yes | ✅ Yes | ❌ No |
@@ -367,12 +380,12 @@ make help         # Show all available targets
 
 🎯 **Perfect For**:
 - Linux development and debugging environments
-- CLI tool traffic analysis (`wget`, `curl`, custom applications)
-- **Wireshark-powered network analysis** with zero TLS complexity
-- CI/CD pipeline integration with traffic inspection
-- Malware analysis in isolated environments
-- API integration testing and debugging
-- **Security research** requiring both process isolation and protocol analysis
+- CLI tool traffic analysis (`wget`, `curl`, custom applications) with mixed HTTP/HTTPS traffic
+- **Wireshark-powered network analysis** with zero TLS complexity for both protocols
+- CI/CD pipeline integration with complete traffic inspection
+- Malware analysis in isolated environments (both encrypted and plain text communications)
+- API integration testing and debugging across HTTP and HTTPS endpoints
+- **Security research** requiring both process isolation and dual protocol analysis
 
 🚫 **Not Suitable For**:
 - Cross-platform development

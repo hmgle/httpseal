@@ -29,6 +29,10 @@ type Config struct {
 	CADir       string
 	KeepCA      bool         // Keep CA directory after exit
 	
+	// HTTP traffic interception
+	EnableHTTP  bool         // Enable HTTP traffic interception on port 80
+	HTTPPort    int          // HTTP proxy port (default 80)
+	
 	// Command execution
 	Command     string
 	CommandArgs []string
