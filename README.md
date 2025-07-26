@@ -607,10 +607,93 @@ make help         # Show all available targets
 
 🚫 **Not Suitable For**:
 - Cross-platform development
-- Web browser traffic interception
+- Web browser traffic interception (see Browser Support section below)
 - Interactive request/response modification
 - Production environment monitoring
 - High-volume or enterprise traffic analysis
+
+## Browser Support Status
+
+### Current Limitation
+
+HTTPSeal currently **does not support web browser traffic interception** (Chrome, Firefox, etc.) due to fundamental differences in how browsers handle certificate validation on Linux.
+
+### Technical Background
+
+Modern web browsers use **independent certificate trust mechanisms** that bypass the system's standard certificate store:
+
+#### Chrome & Chromium-based Browsers
+- Uses **NSS (Network Security Services)** library for all cryptographic operations
+- Maintains independent certificate trust store at `$HOME/.pki/nssdb/`
+- Key database files:
+  - `cert9.db`: Certificate information storage
+  - `key4.db`: Private key information storage  
+  - `pkcs11.txt`: Module loading configuration
+- **Completely bypasses** system CA bundle (`/etc/ssl/certs/ca-certificates.crt`)
+- Does not respect `SSL_CERT_FILE` or similar environment variables
+
+#### Firefox
+- Also uses **NSS library** with the same `$HOME/.pki/nssdb/` database
+- Shares certificate trust store with Chrome/Chromium
+- Independent of system certificate configuration
+- Ignores HTTPSeal's namespace-isolated CA modifications
+
+### Why HTTPSeal Can't Currently Support Browsers
+
+HTTPSeal's current architecture relies on:
+1. **System CA bundle manipulation** within namespaces
+2. **Environment variable configuration** (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, etc.)
+3. **Bind mounting** modified CA certificates to `/etc/ssl/certs/`
+
+Since browsers bypass all these mechanisms and use their own NSS database, HTTPSeal's CA certificates are invisible to browser processes.
+
+### Future Browser Support (TODO)
+
+Supporting browser traffic would require implementing **NSS database integration**:
+
+```bash
+# Potential future implementation approach:
+# 1. Detect NSS database location ($HOME/.pki/nssdb/)
+# 2. Create isolated copy of NSS database within namespace
+# 3. Use certutil to add HTTPSeal CA to isolated NSS database
+# 4. Bind mount modified NSS database for browser process
+
+# Example certutil commands for NSS integration:
+certutil -A -n "HTTPSeal CA" -t "C,," -d sql:$HOME/.pki/nssdb/ -i ca.crt
+certutil -L -d sql:$HOME/.pki/nssdb/  # List certificates
+```
+
+This would involve:
+- **NSS database manipulation** using `certutil` or direct database modification
+- **Isolated NSS database creation** within HTTPSeal's namespace  
+- **Browser-specific environment setup** for NSS database location
+- **Cleanup mechanisms** to restore original NSS state after exit
+
+### Current Workarounds
+
+For browser traffic analysis, consider these alternatives:
+
+1. **Manual CA Installation**: Install HTTPSeal's CA certificate directly into browser
+   ```bash
+   # Export HTTPSeal CA and manually import via browser settings
+   cp ~/.config/httpseal/ca/ca.crt httpseal-ca.crt
+   # Then: Browser Settings → Privacy/Security → Certificates → Import
+   ```
+
+2. **Use HTTPSeal with Browser-like Tools**: 
+   ```bash
+   # wget with browser-like headers
+   httpseal -- wget --user-agent="Mozilla/5.0 ..." https://example.com
+   
+   # curl with browser simulation
+   httpseal -- curl -H "User-Agent: Mozilla/5.0 ..." https://example.com
+   ```
+
+3. **Complement with Browser Dev Tools**: Use HTTPSeal for CLI tools + browser dev tools for web traffic
+
+### Implementation Priority
+
+Browser support is planned for future releases but requires significant architectural changes to support NSS database integration while maintaining HTTPSeal's core isolation principles.
 
 ## Security Considerations
 
