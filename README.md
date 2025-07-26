@@ -588,17 +588,16 @@ make help         # Show all available targets
 
 ### Comparison with Other Tools
 
-| Feature | HTTPSeal | mitmproxy | Burp Suite | Wireshark |
-|---------|----------|-----------|-------------|-----------|
-| **Process Isolation** | ✅ **Unique** | ❌ Global proxy | ❌ Global proxy | ❌ System-wide |
-| **Zero Config** | ✅ **Perfect** | ❌ Proxy setup | ❌ Proxy setup | ❌ Certificate import |
-| **Persistent CA** | ✅ **XDG-compliant** | ❌ Session-only | ❌ Manual | ❌ No |
-| **HAR Support** | ✅ **Native** | ✅ Yes | ✅ Yes | ❌ No |
-| **Wireshark Integration** | 🔥 **Native Mirror** | ❌ No | ❌ No | ✅ Self |
-| **SOCKS5 Proxy** | ✅ **Built-in** | ✅ Yes | ✅ Yes | ❌ No |
-| **Configuration Files** | ✅ **JSON+XDG** | ✅ YAML | ✅ Project files | ❌ No |
-| **CLI Automation** | ✅ **Perfect** | ✅ Good | ❌ Limited | ⚠️ Limited |
-| **Linux Optimization** | ✅ **Native** | ⚠️ Cross-platform | ⚠️ Cross-platform | ✅ Good |
+| Feature | HTTPSeal | mitmproxy | Burp Suite |
+|---------|----------|-----------|-------------|
+| **Process Isolation** | ✅ **Unique** | ❌ Global proxy | ❌ Global proxy |
+| **Zero Config** | ✅ **Perfect** | ❌ Proxy setup | ❌ Proxy setup |
+| **Persistent CA** | ✅ **XDG-compliant** | ❌ Session-only | ❌ Manual |
+| **HAR Support** | ✅ **Native** | ✅ Yes | ✅ Yes |
+| **SOCKS5 Proxy** | ✅ **Built-in** | ✅ Yes | ✅ Yes |
+| **Configuration Files** | ✅ **JSON+XDG** | ✅ YAML | ✅ Project files |
+| **CLI Automation** | ✅ **Perfect** | ✅ Good | ❌ Limited |
+| **Linux Optimization** | ✅ **Native** | ⚠️ Cross-platform | ⚠️ Cross-platform |
 
 ### Best Use Cases
 
@@ -613,29 +612,23 @@ make help         # Show all available targets
 - **Security research** requiring process isolation and comprehensive traffic analysis
 
 🚫 **Not Suitable For**:
-- Cross-platform development
-- Web browser traffic interception (see Browser Support section below)
+- Cross-platform development (Linux only)
 - Interactive request/response modification
 - Production environment monitoring
 - High-volume or enterprise traffic analysis
+- Web browser traffic (use built-in browser dev tools instead)
 
-## Browser Support Status
+## Browser Traffic Analysis
 
-### Current Limitation
+HTTPSeal **does not support browser traffic interception** and there are no plans to add this functionality.
 
-HTTPSeal currently **does not support web browser traffic interception** (Chrome, Firefox, etc.) due to fundamental differences in how browsers handle certificate validation on Linux.
+### Why HTTPSeal Cannot Support Browsers
 
-### Technical Background
-
-Modern web browsers use **independent certificate trust mechanisms** that bypass the system's standard certificate store:
+Modern web browsers use **independent certificate trust mechanisms** that bypass HTTPSeal's certificate replacement approach:
 
 #### Chrome & Chromium-based Browsers
 - Uses **NSS (Network Security Services)** library for all cryptographic operations
 - Maintains independent certificate trust store at `$HOME/.pki/nssdb/`
-- Key database files:
-  - `cert9.db`: Certificate information storage
-  - `key4.db`: Private key information storage  
-  - `pkcs11.txt`: Module loading configuration
 - **Completely bypasses** system CA bundle (`/etc/ssl/certs/ca-certificates.crt`)
 - Does not respect `SSL_CERT_FILE` or similar environment variables
 
@@ -645,8 +638,6 @@ Modern web browsers use **independent certificate trust mechanisms** that bypass
 - Independent of system certificate configuration
 - Ignores HTTPSeal's namespace-isolated CA modifications
 
-### Why HTTPSeal Can't Currently Support Browsers
-
 HTTPSeal's current architecture relies on:
 1. **System CA bundle manipulation** within namespaces
 2. **Environment variable configuration** (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, etc.)
@@ -654,53 +645,18 @@ HTTPSeal's current architecture relies on:
 
 Since browsers bypass all these mechanisms and use their own NSS database, HTTPSeal's CA certificates are invisible to browser processes.
 
-### Future Browser Support (TODO)
+### Alternative: Built-in Browser Developer Tools
 
-Supporting browser traffic would require implementing **NSS database integration**:
+Modern browsers already provide excellent built-in developer tools for HTTPS traffic analysis, making HTTPSeal support unnecessary.
 
+**HTTPSeal Alternative for Browser-like Traffic:**
 ```bash
-# Potential future implementation approach:
-# 1. Detect NSS database location ($HOME/.pki/nssdb/)
-# 2. Create isolated copy of NSS database within namespace
-# 3. Use certutil to add HTTPSeal CA to isolated NSS database
-# 4. Bind mount modified NSS database for browser process
+# Simulate browser requests with HTTPSeal
+httpseal -- curl -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" https://example.com
 
-# Example certutil commands for NSS integration:
-certutil -A -n "HTTPSeal CA" -t "C,," -d sql:$HOME/.pki/nssdb/ -i ca.crt
-certutil -L -d sql:$HOME/.pki/nssdb/  # List certificates
+# Test APIs that browsers would access
+httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 ```
-
-This would involve:
-- **NSS database manipulation** using `certutil` or direct database modification
-- **Isolated NSS database creation** within HTTPSeal's namespace  
-- **Browser-specific environment setup** for NSS database location
-- **Cleanup mechanisms** to restore original NSS state after exit
-
-### Current Workarounds
-
-For browser traffic analysis, consider these alternatives:
-
-1. **Manual CA Installation**: Install HTTPSeal's CA certificate directly into browser
-   ```bash
-   # Export HTTPSeal CA and manually import via browser settings
-   cp ~/.config/httpseal/ca/ca.crt httpseal-ca.crt
-   # Then: Browser Settings → Privacy/Security → Certificates → Import
-   ```
-
-2. **Use HTTPSeal with Browser-like Tools**: 
-   ```bash
-   # wget with browser-like headers
-   httpseal -- wget --user-agent="Mozilla/5.0 ..." https://example.com
-   
-   # curl with browser simulation
-   httpseal -- curl -H "User-Agent: Mozilla/5.0 ..." https://example.com
-   ```
-
-3. **Complement with Browser Dev Tools**: Use HTTPSeal for CLI tools + browser dev tools for web traffic
-
-### Implementation Priority
-
-Browser support is planned for future releases but requires significant architectural changes to support NSS database integration while maintaining HTTPSeal's core isolation principles.
 
 ## Security Considerations
 
