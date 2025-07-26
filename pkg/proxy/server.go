@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -304,12 +305,13 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			)
 		}
 
-		// Replace the response body with our captured bytes so it can be written correctly
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		// Normalize response to HTTP/1.1 to fix HTTP/2 compatibility issues
+		s.normalizeResponseForHTTP11(resp, bodyBytes)
 
-		// Write the complete response back to the client using the robust standard library method
+		// Write the standardized response back to the client
 		if err := resp.Write(conn); err != nil {
 			s.logger.Error("Failed to write response to client: %v", err)
+			break // Break connection on write error
 		}
 
 		// HTTP connection persistence logic
@@ -439,6 +441,29 @@ func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Res
 	}
 
 	return bodyBytes, record, nil
+}
+
+// normalizeResponseForHTTP11 standardizes HTTP response to HTTP/1.1 for client compatibility
+func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodyBytes []byte) {
+	// Force HTTP/1.1 protocol version to fix HTTP/2 compatibility issues
+	resp.Proto = "HTTP/1.1"
+	resp.ProtoMajor = 1
+	resp.ProtoMinor = 1
+	
+	// Set correct Content-Length based on actual captured body
+	resp.ContentLength = int64(len(bodyBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+	
+	// Remove Transfer-Encoding since we have complete body and explicit Content-Length
+	resp.Header.Del("Transfer-Encoding")
+	
+	// Remove HTTP/2 specific headers that might cause issues
+	resp.Header.Del("Alt-Svc")
+	
+	// Replace response body with captured content
+	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	
+	s.logger.Debug("Normalized response to HTTP/1.1 with Content-Length: %d", len(bodyBytes))
 }
 
 
