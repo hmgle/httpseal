@@ -34,11 +34,13 @@ type Server struct {
 	stopCh        chan struct{}
 	isHTTPS       bool           // true for HTTPS, false for HTTP
 	config        *config.Config // Configuration for SOCKS5 proxy support
+	httpClient    *http.Client   // Standard HTTP client
+	socks5Client  *http.Client   // SOCKS5-enabled HTTP client
 }
 
 // NewServer creates a new HTTPS proxy server
 func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
-	return &Server{
+	s := &Server{
 		port:          port,
 		ca:            ca,
 		dnsServer:     dnsServer,
@@ -49,11 +51,14 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 		isHTTPS:       true,
 		config:        cfg,
 	}
+	s.httpClient = createHTTPClient(cfg, false, trafficLogger)
+	s.socks5Client = createHTTPClient(cfg, true, trafficLogger)
+	return s
 }
 
 // NewHTTPServer creates a new HTTP proxy server
 func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
-	return &Server{
+	s := &Server{
 		port:          port,
 		ca:            nil, // No CA needed for HTTP
 		dnsServer:     dnsServer,
@@ -64,7 +69,59 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 		isHTTPS:       false,
 		config:        cfg,
 	}
+	s.httpClient = createHTTPClient(cfg, false, trafficLogger)
+	s.socks5Client = createHTTPClient(cfg, true, trafficLogger)
+	return s
 }
+
+// createHTTPClient creates a reusable HTTP client with optional SOCKS5 proxy
+func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) *http.Client {
+	transport := &http.Transport{
+		// Use the default dialer
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false, // Always verify server certificate
+		},
+	}
+
+	// Configure SOCKS5 proxy if enabled and requested
+	if useSocks5 && cfg.SOCKS5Enabled && cfg.SOCKS5Address != "" {
+		var auth *proxy.Auth
+		if cfg.SOCKS5Username != "" && cfg.SOCKS5Password != "" {
+			auth = &proxy.Auth{
+				User:     cfg.SOCKS5Username,
+				Password: cfg.SOCKS5Password,
+			}
+		}
+
+		// Create SOCKS5 dialer
+		socks5Dialer, err := proxy.SOCKS5("tcp", cfg.SOCKS5Address, auth, proxy.Direct)
+		if err != nil {
+			log.Error("Failed to create SOCKS5 dialer, SOCKS5 will be disabled: %v", err)
+		} else {
+			transport.DialContext = socks5Dialer.(proxy.ContextDialer).DialContext
+			log.Debug("SOCKS5 proxy configured for http client")
+		}
+	}
+
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Don't follow redirects - return them as-is to maintain transparency
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 
 // Start starts the HTTPS proxy server
 func (s *Server) Start() error {
@@ -172,30 +229,27 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 	if connectionTimeout <= 0 {
 		connectionTimeout = 30 * time.Second // fallback default
 	}
-	
+
 	for {
 		// Set read deadline to detect idle connections
 		conn.SetReadDeadline(time.Now().Add(connectionTimeout))
-		
+
 		// Create a buffered reader for parsing HTTP requests
 		reader := bufio.NewReader(conn)
 
 		// Parse the HTTP request
 		req, err := http.ReadRequest(reader)
 		if err != nil {
-			if err == io.EOF {
-				s.logger.Debug("Client closed connection (EOF)")
-				break // Client closed connection
+			if err == io.EOF || strings.Contains(err.Error(), "client closed connection") {
+				s.logger.Debug("Client closed connection.")
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				s.logger.Debug("Connection timeout waiting for request.")
+			} else {
+				s.logger.Error("Failed to parse HTTP request: %v", err)
 			}
-			// Check for timeout errors
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				s.logger.Debug("Connection timeout - closing connection")
-				break
-			}
-			s.logger.Error("Failed to parse HTTP request: %v", err)
-			return
+			break // Exit loop on any read error
 		}
-		
+
 		// Clear read deadline for request processing
 		conn.SetReadDeadline(time.Time{})
 
@@ -205,9 +259,9 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			requestBody, err = io.ReadAll(req.Body)
 			if err != nil {
 				s.logger.Error("Failed to read request body: %v", err)
-				return
+				return // Cannot proceed without body
 			}
-			req.Body.Close()
+			req.Body.Close() // Close original body
 		}
 
 		// Log the request with body
@@ -220,8 +274,10 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 
 		if err != nil {
 			s.logger.Error("Failed to forward request to %s: %v", realDomain, err)
+			// Optionally, write a 502 Bad Gateway response to the client
 			return
 		}
+		defer resp.Body.Close()
 
 		// Capture response and create traffic record
 		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration, requestBody)
@@ -248,41 +304,23 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			)
 		}
 
-		// Send the response back to the client
-		if err := s.writeResponseWithBody(conn, resp, bodyBytes); err != nil {
-			s.logger.Error("Failed to write response: %v", err)
-			resp.Body.Close()
-			return
-		}
-		resp.Body.Close()
+		// Replace the response body with our captured bytes so it can be written correctly
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-		// Check if connection should be closed
-		shouldClose := req.Header.Get("Connection") == "close" || 
-			req.Proto == "HTTP/1.0" ||
-			resp.Header.Get("Connection") == "close"
-		
-		// For non-browser clients (like curl), be more aggressive about closing connections
-		// after single requests to prevent hanging
-		userAgent := req.Header.Get("User-Agent")
-		if shouldClose || (userAgent != "" && !isWebBrowser(userAgent)) {
-			s.logger.Debug("Closing connection after response (Connection: %s, Proto: %s, UA: %s)", 
-				req.Header.Get("Connection"), req.Proto, userAgent)
+		// Write the complete response back to the client using the robust standard library method
+		if err := resp.Write(conn); err != nil {
+			s.logger.Error("Failed to write response to client: %v", err)
+		}
+
+		// HTTP connection persistence logic
+		if req.Close || resp.Close || (req.ProtoAtLeast(1, 1) && req.Header.Get("Connection") == "close") || (req.ProtoAtLeast(1, 0) && req.Header.Get("Connection") != "keep-alive") {
+			s.logger.Debug("Closing connection as requested by headers.")
 			break
 		}
 	}
 }
 
-// isWebBrowser checks if the User-Agent indicates a web browser
-func isWebBrowser(userAgent string) bool {
-	userAgent = strings.ToLower(userAgent)
-	browsers := []string{"mozilla", "chrome", "safari", "firefox", "edge", "opera"}
-	for _, browser := range browsers {
-		if strings.Contains(userAgent, browser) {
-			return true
-		}
-	}
-	return false
-}
+
 
 // createTLSConfig creates TLS configuration with dynamic certificate for the domain
 func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
@@ -326,41 +364,13 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	// Clear RequestURI as it's not allowed in client requests
 	newReq.RequestURI = ""
 
-	// Create HTTP client with timeout and optional SOCKS5 proxy support
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: false,
-		},
-	}
-
-	// Configure SOCKS5 proxy if enabled
-	if s.config.SOCKS5Enabled && s.config.SOCKS5Address != "" {
-		var auth *proxy.Auth
-		if s.config.SOCKS5Username != "" && s.config.SOCKS5Password != "" {
-			auth = &proxy.Auth{
-				User:     s.config.SOCKS5Username,
-				Password: s.config.SOCKS5Password,
-			}
-		}
-
-		// Create SOCKS5 dialer
-		socks5Dialer, err := proxy.SOCKS5("tcp", s.config.SOCKS5Address, auth, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
-		}
-
-		// Set the dialer for the transport
-		transport.Dial = socks5Dialer.Dial
+	// Choose the appropriate, pre-configured HTTP client
+	var client *http.Client
+	if s.config.SOCKS5Enabled {
 		s.logger.Debug("Using SOCKS5 proxy %s for connection to %s", s.config.SOCKS5Address, realDomain)
-	}
-
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Don't follow redirects - return them as-is to maintain transparency
-			return http.ErrUseLastResponse
-		},
+		client = s.socks5Client
+	} else {
+		client = s.httpClient
 	}
 
 	return client.Do(newReq)
@@ -431,24 +441,4 @@ func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Res
 	return bodyBytes, record, nil
 }
 
-// writeResponseWithBody writes the HTTP response back to the client with captured body
-func (s *Server) writeResponseWithBody(conn net.Conn, resp *http.Response, bodyBytes []byte) error {
-	// Write status line
-	if _, err := fmt.Fprintf(conn, "%s %s\r\n", resp.Proto, resp.Status); err != nil {
-		return err
-	}
 
-	// Write headers
-	if err := resp.Header.Write(conn); err != nil {
-		return err
-	}
-
-	// Write blank line
-	if _, err := conn.Write([]byte("\r\n")); err != nil {
-		return err
-	}
-
-	// Write captured body
-	_, err := conn.Write(bodyBytes)
-	return err
-}

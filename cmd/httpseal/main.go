@@ -6,7 +6,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/hmgle/httpseal/internal/config"
 	"github.com/hmgle/httpseal/pkg/cert"
@@ -194,16 +193,6 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		effectiveFileLogLevel = logLevel
 	}
 
-	// Determine CA directory (use temp dir if not specified)
-	effectiveCADir := caDir
-	if effectiveCADir == "" {
-		tempDir, err := os.MkdirTemp("", "httpseal-ca-*")
-		if err != nil {
-			return fmt.Errorf("failed to create temporary CA directory: %w", err)
-		}
-		effectiveCADir = tempDir
-	}
-
 	// Auto-enable SOCKS5 if any SOCKS5 parameters are provided
 	effectiveSocks5Enabled := socks5Enabled
 	if !effectiveSocks5Enabled {
@@ -220,7 +209,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		DNSIP:     dnsIP,
 		DNSPort:   dnsPort,
 		ProxyPort: proxyPort,
-		CADir:     effectiveCADir,
+		CADir:     caDir, // Will be updated below if temporary
 		KeepCA:    keepCA,
 
 		// HTTP traffic interception
@@ -256,12 +245,36 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		MirrorPort:   mirrorPort,
 	}
 
-	// Initialize enhanced logger with traffic logging capabilities
+	// Initialize enhanced logger first, as other components need it.
 	log, err := logger.NewEnhanced(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
 	defer log.Close()
+
+	// --- CA Directory Handling ---
+	isTempCADir := false
+	if cfg.CADir == "" {
+		tempDir, err := os.MkdirTemp("", "httpseal-ca-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temporary CA directory: %w", err)
+		}
+		cfg.CADir = tempDir
+		isTempCADir = true
+	}
+
+	// Defer cleanup immediately after potential creation.
+	// This ensures cleanup happens even if subsequent initializations fail.
+	defer func() {
+		if isTempCADir && !cfg.KeepCA {
+			if err := os.RemoveAll(cfg.CADir); err != nil {
+				log.Error("Failed to cleanup temporary CA directory: %v", err)
+			} else {
+				log.Info("Cleaned up temporary CA directory: %s", cfg.CADir)
+			}
+		}
+	}()
+	// --- End CA Directory Handling ---
 
 	if !cfg.Quiet {
 		log.Info("Starting HTTPSeal v%s", version)
@@ -272,21 +285,6 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize CA: %w", err)
 	}
-
-	// Ensure CA cleanup on exit
-	defer func() {
-		// Always cleanup temp directories, respect --keep-ca for user-specified directories
-		shouldCleanup := caDir == "" || !cfg.KeepCA
-		if shouldCleanup {
-			if cleanupErr := ca.Cleanup(); cleanupErr != nil {
-				log.Error("Failed to cleanup CA directory: %v", cleanupErr)
-			} else if !cfg.Quiet && caDir == "" {
-				log.Info("Cleaned up temporary CA directory: %s", cfg.CADir)
-			} else if !cfg.Quiet && caDir != "" {
-				log.Info("Cleaned up CA directory: %s", cfg.CADir)
-			}
-		}
-	}()
 
 	// Initialize DNS server
 	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, log)
@@ -320,10 +318,6 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 			log.Info("SOCKS5 proxy enabled: %s (no authentication)", cfg.SOCKS5Address)
 		}
 	}
-
-	// Setup signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start DNS server
 	if err := dnsServer.Start(); err != nil {
@@ -371,6 +365,10 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		processChan <- nsWrapper.Execute()
 	}()
 
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	// Wait for either process completion or signal
 	select {
 	case err := <-processChan:
@@ -385,24 +383,13 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		if !cfg.Quiet {
 			log.Info("Received signal %v, shutting down...", sig)
 		}
+		// Signal the process to terminate.
 		nsWrapper.Stop()
-
-		// Wait for graceful shutdown with timeout
-		shutdownDone := make(chan bool, 1)
-		go func() {
-			// Wait for process to actually exit
-			<-processChan
-			shutdownDone <- true
-		}()
-
-		select {
-		case <-shutdownDone:
-			// Graceful shutdown completed
-		case <-time.After(2 * time.Second):
-			// Force termination if graceful shutdown takes too long
-			if !cfg.Quiet {
-				log.Warn("Forced termination after timeout")
-			}
+		// Wait for the process to actually exit. This is crucial.
+		// The deferred server shutdowns will happen after this select block.
+		<-processChan
+		if !cfg.Quiet {
+			log.Info("Process terminated, all servers shutting down.")
 		}
 	}
 

@@ -2,7 +2,6 @@ package namespace
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,7 +54,7 @@ func supportsUserNamespace() bool {
 func (w *Wrapper) Execute() error {
 	// Create temporary directory for bind mount preparations
 	var err error
-	w.tempDir, err = ioutil.TempDir("", "httpseal-*")
+	w.tempDir, err = os.MkdirTemp("", "httpseal-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}

@@ -1,281 +1,303 @@
 package cert
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hmgle/httpseal/pkg/logger"
 )
 
-// CA represents a Certificate Authority for generating domain certificates
+const (
+	caCertFile = "ca.crt"
+	caKeyFile  = "ca.key"
+	certTTL    = 24 * time.Hour * 365 // 1 year for generated certs
+)
+
+// CA handles certificate authority operations
 type CA struct {
-	dir        string
-	caCert     *x509.Certificate
-	caKey      *rsa.PrivateKey
-	certCache  map[string]*tls.Certificate
-	cacheMutex sync.RWMutex
-	isTempDir  bool // Track if this is a temporary directory that should always be cleaned up
-	logger     logger.Logger
+	caCert       *x509.Certificate
+	caKey        *ecdsa.PrivateKey
+	certCache    sync.Map // Caches generated certificates for domains
+	caDir        string
+	logger       logger.Logger
+	certCacheDir string
 }
 
-// NewCA creates or loads a certificate authority
+// NewCA creates a new CA instance
 func NewCA(caDir string, log logger.Logger) (*CA, error) {
-	// Detect if this is a temporary directory by checking if it's in temp dir
-	// and has the httpseal-ca prefix
-	isTempDir := strings.Contains(caDir, os.TempDir()) && strings.Contains(filepath.Base(caDir), "httpseal-ca-")
-
 	ca := &CA{
-		dir:       caDir,
-		certCache: make(map[string]*tls.Certificate),
-		isTempDir: isTempDir,
-		logger:    log,
+		caDir:        caDir,
+		logger:       log,
+		certCacheDir: filepath.Join(caDir, "certs"),
 	}
 
-	if err := os.MkdirAll(caDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create CA directory: %w", err)
+	if err := os.MkdirAll(ca.certCacheDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create cert cache directory: %w", err)
 	}
 
-	// Load or create CA certificate and key
-	if err := ca.loadOrCreateCA(); err != nil {
-		return nil, fmt.Errorf("failed to initialize CA: %w", err)
+	if err := ca.loadOrGenerateCA(); err != nil {
+		return nil, err
 	}
 
 	return ca, nil
 }
 
-// loadOrCreateCA loads existing CA or creates a new one
-func (ca *CA) loadOrCreateCA() error {
-	caCertPath := filepath.Join(ca.dir, "ca.crt")
+// loadOrGenerateCA loads an existing CA or generates a new one
+func (ca *CA) loadOrGenerateCA() error {
+	certPath := filepath.Join(ca.caDir, caCertFile)
+	keyPath := filepath.Join(ca.caDir, caKeyFile)
 
-	// Check if CA files exist
-	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
-		return ca.createCA()
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			// Both files exist, try to load them
+			ca.logger.Info("Loading existing CA from %s", ca.caDir)
+			return ca.loadCA(certPath, keyPath)
+		}
 	}
 
-	return ca.loadCA()
+	// If loading failed or files don't exist, generate a new CA
+	ca.logger.Info("Generating new CA in %s", ca.caDir)
+	return ca.generateCA(certPath, keyPath)
 }
 
-// createCA creates a new root CA certificate and private key
-func (ca *CA) createCA() error {
-	// Generate private key
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return fmt.Errorf("failed to generate CA private key: %w", err)
-	}
-
-	// Create certificate template
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization:  []string{"HTTPSeal CA"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{""},
-			StreetAddress: []string{""},
-			PostalCode:    []string{""},
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour * 10), // 10 years
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-
-	// Create certificate
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		return fmt.Errorf("failed to create CA certificate: %w", err)
-	}
-
-	// Parse certificate
-	cert, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return fmt.Errorf("failed to parse CA certificate: %w", err)
-	}
-
-	ca.caCert = cert
-	ca.caKey = key
-
-	// Save to files
-	if err := ca.saveCACert(certDER); err != nil {
-		return err
-	}
-
-	if err := ca.saveCAKey(key); err != nil {
-		return err
-	}
-
-	ca.logger.Info("Created new CA certificate: %s", filepath.Join(ca.dir, "ca.crt"))
-
-	return nil
-}
-
-// loadCA loads existing CA certificate and key
-func (ca *CA) loadCA() error {
-	caCertPath := filepath.Join(ca.dir, "ca.crt")
-	caKeyPath := filepath.Join(ca.dir, "ca.key")
-
+// loadCA loads the CA certificate and private key from files
+func (ca *CA) loadCA(certPath, keyPath string) error {
 	// Load certificate
-	certPEM, err := os.ReadFile(caCertPath)
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA certificate: %w", err)
 	}
-
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
 		return fmt.Errorf("failed to decode CA certificate PEM")
 	}
-
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	ca.caCert, err = x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
 	// Load private key
-	keyPEM, err := os.ReadFile(caKeyPath)
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA private key: %w", err)
 	}
-
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
 		return fmt.Errorf("failed to decode CA private key PEM")
 	}
-
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	ca.caKey, err = x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse CA private key: %w", err)
 	}
 
-	ca.caCert = cert
-	ca.caKey = key
-
+	ca.logger.Debug("Successfully loaded CA certificate and key")
 	return nil
 }
 
-// GenerateCertForDomain generates a TLS certificate for the specified domain
-func (ca *CA) GenerateCertForDomain(domain string) (*tls.Certificate, error) {
-	ca.cacheMutex.RLock()
-	if cert, exists := ca.certCache[domain]; exists {
-		ca.cacheMutex.RUnlock()
-		return cert, nil
-	}
-	ca.cacheMutex.RUnlock()
-
-	// Generate new certificate
-	cert, err := ca.generateCertificate(domain)
+// generateCA generates a new CA certificate and private key
+func (ca *CA) generateCA(certPath, keyPath string) error {
+	// Generate private key
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to generate private key: %w", err)
+	}
+	ca.caKey = privateKey
+
+	// Create certificate template
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %w", err)
 	}
 
-	// Cache the certificate
-	ca.cacheMutex.Lock()
-	ca.certCache[domain] = cert
-	ca.cacheMutex.Unlock()
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"HTTPSeal"},
+			CommonName:   "HTTPSeal Root CA",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(certTTL * 10), // 10 years for root CA
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
 
-	return cert, nil
+	// Create self-signed certificate
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to create CA certificate: %w", err)
+	}
+
+	ca.caCert, err = x509.ParseCertificate(derBytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse generated CA certificate: %w", err)
+	}
+
+	// Save certificate to file
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return fmt.Errorf("failed to create CA certificate file: %w", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		certOut.Close()
+		return fmt.Errorf("failed to write CA certificate: %w", err)
+	}
+	if err := certOut.Close(); err != nil {
+		return fmt.Errorf("failed to close CA certificate file: %w", err)
+	}
+
+	// Save private key to file
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		return fmt.Errorf("failed to create CA private key file: %w", err)
+	}
+	b, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		keyOut.Close()
+		return fmt.Errorf("failed to marshal CA private key: %w", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}); err != nil {
+		keyOut.Close()
+		return fmt.Errorf("failed to write CA private key: %w", err)
+	}
+	if err := keyOut.Close(); err != nil {
+		return fmt.Errorf("failed to close CA private key file: %w", err)
+	}
+
+	ca.logger.Debug("Successfully generated and saved new CA")
+	return nil
 }
 
-// generateCertificate creates a new certificate for the domain
-func (ca *CA) generateCertificate(domain string) (*tls.Certificate, error) {
-	// Generate private key
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+// GenerateCertForDomain generates a certificate for a specific domain, signed by the CA
+func (ca *CA) GenerateCertForDomain(domain string) (*tls.Certificate, error) {
+	// Check cache first
+	if cert, ok := ca.certCache.Load(domain); ok {
+		ca.logger.Debug("Loaded certificate for %s from memory cache", domain)
+		return cert.(*tls.Certificate), nil
+	}
+
+	// Check file cache
+	certPath := filepath.Join(ca.certCacheDir, domain+".crt")
+	keyPath := filepath.Join(ca.certCacheDir, domain+".key")
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+			if err == nil {
+				// Manually parse leaf certificate to have it available in the struct
+				cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+				if err != nil {
+					ca.logger.Warn("Failed to parse cached cert for %s: %v", domain, err)
+				} else {
+					ca.logger.Debug("Loaded certificate for %s from file cache", domain)
+					ca.certCache.Store(domain, &cert)
+					return &cert, nil
+				}
+			}
+			ca.logger.Warn("Failed to load cached key pair for %s: %v", domain, err)
+		}
+	}
+
+	// If not in cache, generate a new one
+	ca.logger.Debug("Generating new certificate for %s", domain)
+
+	// Generate private key for the domain certificate
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate private key for %s: %w", domain, err)
 	}
 
 	// Create certificate template
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().Unix()),
-		Subject: pkix.Name{
-			Organization:  []string{"HTTPSeal"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{""},
-			StreetAddress: []string{""},
-			PostalCode:    []string{""},
-		},
-		DNSNames:              []string{domain},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // 1 year
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate serial number for %s: %w", domain, err)
 	}
 
-	// Create certificate signed by CA
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, ca.caCert, &key.PublicKey, ca.caKey)
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: domain,
+		},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(certTTL),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	// Add domain and any IP addresses to SANs
+	if ip := net.ParseIP(domain); ip != nil {
+		template.IPAddresses = []net.IP{ip}
+	} else {
+		template.DNSNames = []string{domain}
+	}
+
+	// Create the certificate
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, ca.caCert, &privateKey.PublicKey, ca.caKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create certificate for %s: %w", domain, err)
 	}
 
-	// Create TLS certificate
-	tlsCert := &tls.Certificate{
-		Certificate: [][]byte{certDER},
-		PrivateKey:  key,
-	}
-
-	return tlsCert, nil
-}
-
-// saveCACert saves the CA certificate to file
-func (ca *CA) saveCACert(certDER []byte) error {
-	certPath := filepath.Join(ca.dir, "ca.crt")
+	// Save certificate to file cache
 	certOut, err := os.Create(certPath)
 	if err != nil {
-		return fmt.Errorf("failed to create CA certificate file: %w", err)
+		return nil, fmt.Errorf("failed to create cert file for %s: %w", domain, err)
 	}
-	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		certOut.Close()
+		return nil, fmt.Errorf("failed to write cert file for %s: %w", domain, err)
+	}
+	if err := certOut.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close cert file for %s: %w", domain, err)
+	}
 
-	return pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-}
-
-// saveCAKey saves the CA private key to file
-func (ca *CA) saveCAKey(key *rsa.PrivateKey) error {
-	keyPath := filepath.Join(ca.dir, "ca.key")
+	// Save private key to file cache
 	keyOut, err := os.Create(keyPath)
 	if err != nil {
-		return fmt.Errorf("failed to create CA private key file: %w", err)
+		return nil, fmt.Errorf("failed to create key file for %s: %w", domain, err)
 	}
-	defer keyOut.Close()
+	b, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		keyOut.Close()
+		return nil, fmt.Errorf("failed to marshal private key for %s: %w", domain, err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}); err != nil {
+		keyOut.Close()
+		return nil, fmt.Errorf("failed to write key file for %s: %w", domain, err)
+	}
+	if err := keyOut.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close key file for %s: %w", domain, err)
+	}
 
-	keyBytes := x509.MarshalPKCS1PrivateKey(key)
-	return pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes})
+	// Create tls.Certificate
+	leaf, err := x509.ParseCertificate(derBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse generated certificate for %s: %w", domain, err)
+	}
+	cert := &tls.Certificate{
+		Certificate: [][]byte{derBytes},
+		PrivateKey:  privateKey,
+		Leaf:        leaf,
+	}
+
+	// Store in memory cache
+	ca.certCache.Store(domain, cert)
+
+	return cert, nil
 }
 
-// Cleanup removes the CA directory and all certificates if it's safe to do so
+// Cleanup removes the CA directory if it's temporary
 func (ca *CA) Cleanup() error {
-	// Only cleanup if this is a temporary directory we created
-	if !ca.isTempDir {
-		return nil
-	}
-
-	// Clear in-memory cache first
-	ca.cacheMutex.Lock()
-	ca.certCache = make(map[string]*tls.Certificate)
-	ca.cacheMutex.Unlock()
-
-	// Remove the entire CA directory
-	if err := os.RemoveAll(ca.dir); err != nil {
-		return fmt.Errorf("failed to cleanup CA directory %s: %w", ca.dir, err)
-	}
-
-	return nil
-}
-
-// GetCACertPath returns the path to the CA certificate file
-func (ca *CA) GetCACertPath() string {
-	return filepath.Join(ca.dir, "ca.crt")
+	ca.logger.Debug("Cleaning up CA directory: %s", ca.caDir)
+	return os.RemoveAll(ca.caDir)
 }
