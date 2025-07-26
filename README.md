@@ -42,9 +42,9 @@ HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP inter
 
 ## Requirements
 
-- **Operating System**: Linux (kernel 3.8+ for user namespace support)  
+- **Operating System**: Linux (kernel 3.8+ for user namespace support)
 - **Go Version**: 1.24.4 or later
-- **Linux Capabilities**: 
+- **Linux Capabilities**:
   - `CAP_NET_BIND_SERVICE`: For binding to privileged ports (80, 443)
   - HTTPSeal uses user namespace UID mapping for mount operations (no `CAP_SYS_ADMIN` required)
 
@@ -223,12 +223,14 @@ httpseal --enable-mirror -v --format json -o traffic.json -- <command>
 ### Why This Is Revolutionary
 
 **Traditional Wireshark TLS Decryption**:
+
 - ❌ Requires RSA private keys
 - ❌ Only works with RSA key exchange (not modern ECDHE)
 - ❌ Complex certificate management
 - ❌ Limited TLS 1.3 support
 
 **HTTPSeal Mirror Approach**:
+
 - ✅ Works with ALL TLS versions and cipher suites
 - ✅ Zero certificate configuration
 - ✅ Real-time streaming
@@ -253,6 +255,7 @@ User-Agent: curl/7.68.0
 HTTPSeal supports JSON configuration files following XDG Base Directory specification:
 
 ### Default Configuration Location
+
 ```bash
 # XDG-compliant paths (checked in order)
 $XDG_CONFIG_HOME/httpseal/config.json
@@ -261,6 +264,7 @@ $XDG_CONFIG_HOME/httpseal/config.json
 ```
 
 ### Configuration File Example
+
 ```json
 {
   "verbose": true,
@@ -285,6 +289,7 @@ $XDG_CONFIG_HOME/httpseal/config.json
 ```
 
 ### Usage with Configuration File
+
 ```bash
 # Use default config location
 httpseal -- curl https://api.github.com/users/octocat
@@ -301,6 +306,7 @@ httpseal --config ./config.json --verbose --output traffic.json -- curl https://
 HTTPSeal includes comprehensive SOCKS5 proxy support for upstream connections, perfect for bypassing network restrictions or routing traffic through VPNs:
 
 ### Basic SOCKS5 Usage
+
 ```bash
 # Enable SOCKS5 with default address (127.0.0.1:1080)
 httpseal --socks5 -- curl https://www.google.com
@@ -313,12 +319,14 @@ httpseal --socks5-addr 127.0.0.1:1080 --socks5-user myuser --socks5-pass mypass 
 ```
 
 ### SOCKS5 Features
+
 - **Auto-enable**: Providing any SOCKS5 parameter automatically enables SOCKS5 mode
 - **Authentication support**: Username/password authentication
 - **Transparent operation**: Target applications are unaware of SOCKS5 proxy
 - **Error handling**: Detailed error messages for SOCKS5 connection failures
 
 ### Common Use Cases
+
 ```bash
 # Bypass GFW restrictions (mainland China)
 httpseal --socks5-addr 127.0.0.1:1080 -- curl https://www.google.com
@@ -337,37 +345,47 @@ HTTPSeal provides multiple output formats with sophisticated logging control:
 ### Output Formats
 
 #### 1. **HAR (HTTP Archive) Format**
+
 Perfect for browser dev tools and performance analysis:
+
 ```bash
 httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
 ```
 
 **HAR Features:**
+
 - Full W3C HAR 1.2 specification compliance
 - Complete request/response data with timing
 - Compatible with browser developer tools
 - Supports Chrome DevTools, Firefox, and HAR analysis tools
 
 #### 2. **JSON Format**
+
 Structured data for programmatic analysis:
+
 ```bash
 httpseal -o traffic.json --format json -- curl https://httpbin.org/get
 ```
 
 #### 3. **CSV Format**
+
 Spreadsheet-compatible with complete data:
+
 ```bash
 httpseal -o traffic.csv --format csv -- wget https://api.github.com/users/octocat
 ```
 
 **CSV Features:**
+
 - Headers and body content included
 - Session ID correlation
 - Timestamp and duration tracking
 - JSON-encoded headers in CSV cells
 
 #### 4. **Text Format**
+
 Human-readable console output:
+
 ```bash
 httpseal -o traffic.txt --format text -- curl https://httpbin.org/get
 ```
@@ -396,6 +414,7 @@ httpseal --log-file system.log -o traffic.json -- curl https://api.github.com
 ### Session Tracking
 
 All traffic includes session IDs for correlation:
+
 ```bash
 # Session ID format: tb_<unix_timestamp>
 # Available in all output formats (JSON, CSV, HAR, text)
@@ -443,7 +462,7 @@ Output Options:
 
 Filtering and Limits:
       --filter-domain strings        Only log traffic for these domains (can be repeated)
-      --exclude-content-type strings Exclude these content types from logging (can be repeated)  
+      --exclude-content-type strings Exclude these content types from logging (can be repeated)
       --max-body-size int            Maximum response body size to log (bytes, 0=unlimited) (default 0)
 
 Configuration:
@@ -588,30 +607,28 @@ make help         # Show all available targets
 
 ### Comparison with Other Tools
 
-| Feature | HTTPSeal | mitmproxy | Burp Suite |
-|---------|----------|-----------|-------------|
-| **Process Isolation** | ✅ **Unique** | ❌ Global proxy | ❌ Global proxy |
-| **Zero Config** | ✅ **Perfect** | ❌ Proxy setup | ❌ Proxy setup |
-| **Persistent CA** | ✅ **XDG-compliant** | ❌ Session-only | ❌ Manual |
-| **HAR Support** | ✅ **Native** | ✅ Yes | ✅ Yes |
-| **SOCKS5 Proxy** | ✅ **Built-in** | ✅ Yes | ✅ Yes |
-| **Configuration Files** | ✅ **JSON+XDG** | ✅ YAML | ✅ Project files |
-| **CLI Automation** | ✅ **Perfect** | ✅ Good | ❌ Limited |
-| **Linux Optimization** | ✅ **Native** | ⚠️ Cross-platform | ⚠️ Cross-platform |
+| Feature               | HTTPSeal          | mitmproxy       | Burp Suite      |
+| --------------------- | ----------------- | --------------- | --------------- |
+| **Process Isolation** | ✅ **Unique**     | ❌ Global proxy | ❌ Global proxy |
+| **Zero Config**       | ✅ **Perfect**    | ❌ Proxy setup  | ❌ Proxy setup  |
+| **CLI Automation**    | ✅ **Perfect**    | ✅ Good         | ❌ Limited      |
+| **Cross-platform**    | ❌ **Linux Only** | ✅ Yes          | ✅ Yes          |
 
 ### Best Use Cases
 
 🎯 **Perfect For**:
+
 - **Linux development and debugging** with zero configuration and automatic certificate management
 - **CLI tool traffic analysis** (`wget`, `curl`, custom applications) with persistent CA storage
 - **HAR-based performance analysis** with browser dev tools integration
-- **Wireshark-powered network analysis** with zero TLS complexity  
+- **Wireshark-powered network analysis** with zero TLS complexity
 - **CI/CD pipeline integration** with structured logging and session tracking
 - **SOCKS5-enabled environments** requiring proxy bypass for restricted networks
 - **API integration testing** with persistent certificates and advanced filtering
 - **Security research** requiring process isolation and comprehensive traffic analysis
 
 🚫 **Not Suitable For**:
+
 - Cross-platform development (Linux only)
 - Interactive request/response modification
 - Production environment monitoring
@@ -627,18 +644,21 @@ HTTPSeal **does not support browser traffic interception** and there are no plan
 Modern web browsers use **independent certificate trust mechanisms** that bypass HTTPSeal's certificate replacement approach:
 
 #### Chrome & Chromium-based Browsers
+
 - Uses **NSS (Network Security Services)** library for all cryptographic operations
 - Maintains independent certificate trust store at `$HOME/.pki/nssdb/`
 - **Completely bypasses** system CA bundle (`/etc/ssl/certs/ca-certificates.crt`)
 - Does not respect `SSL_CERT_FILE` or similar environment variables
 
 #### Firefox
+
 - Also uses **NSS library** with the same `$HOME/.pki/nssdb/` database
 - Shares certificate trust store with Chrome/Chromium
 - Independent of system certificate configuration
 - Ignores HTTPSeal's namespace-isolated CA modifications
 
 HTTPSeal's current architecture relies on:
+
 1. **System CA bundle manipulation** within namespaces
 2. **Environment variable configuration** (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, etc.)
 3. **Bind mounting** modified CA certificates to `/etc/ssl/certs/`
@@ -650,6 +670,7 @@ Since browsers bypass all these mechanisms and use their own NSS database, HTTPS
 Modern browsers already provide excellent built-in developer tools for HTTPS traffic analysis, making HTTPSeal support unnecessary.
 
 **HTTPSeal Alternative for Browser-like Traffic:**
+
 ```bash
 # Simulate browser requests with HTTPSeal
 httpseal -- curl -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" https://example.com
@@ -671,6 +692,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 ## 📋 Example Outputs
 
 ### 1. Standard Mode with Session Tracking
+
 ```
 [15:30:42] INFO: Starting HTTPSeal v0.1.0
 [15:30:42] INFO: Listening on 0.0.0.0:443 (HTTPS), DNS on 127.0.53.1:53
@@ -690,6 +712,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 ```
 
 ### 2. SOCKS5 Proxy Mode
+
 ```
 [15:30:42] INFO: Starting HTTPSeal v0.1.0
 [15:30:42] INFO: SOCKS5 proxy enabled: 127.0.0.1:1080 (with authentication)
@@ -699,6 +722,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 ```
 
 ### 3. HAR Output Example
+
 ```json
 {
   "log": {
@@ -717,8 +741,8 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
           "url": "/users/octocat",
           "httpVersion": "1.1",
           "headers": [
-            {"name": "User-Agent", "value": "curl/8.5.0-DEV"},
-            {"name": "Accept", "value": "*/*"}
+            { "name": "User-Agent", "value": "curl/8.5.0-DEV" },
+            { "name": "Accept", "value": "*/*" }
           ],
           "queryString": [],
           "headersSize": 41,
@@ -729,8 +753,8 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
           "statusText": "OK",
           "httpVersion": "1.1",
           "headers": [
-            {"name": "Content-Type", "value": "application/json"},
-            {"name": "Content-Length", "value": "290"}
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Content-Length", "value": "290" }
           ],
           "content": {
             "size": 290,
@@ -740,7 +764,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
           "headersSize": 211,
           "bodySize": 290
         },
-        "timings": {"wait": 2203}
+        "timings": { "wait": 2203 }
       }
     ]
   }
@@ -748,12 +772,14 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 ```
 
 ### 4. CSV Output with Complete Data
+
 ```csv
 timestamp,session_id,domain,method,url,status_code,status,content_type,request_size,response_size,duration_ms,request_headers,response_headers,request_body,response_body
 2025-07-25T15:01:19+08:00,tb_1640445042,api.github.com,GET,/users/octocat,200,200 OK,application/json,0,290,2203,"{""User-Agent"":""curl/8.5.0-DEV"",""Accept"":""*/*""}","{""Content-Type"":""application/json"",""Content-Length"":""290""}","","{""login"":""octocat"",""id"":1,...}"
 ```
 
 ### 5. Configuration File Usage
+
 ```bash
 # ~/.config/httpseal/config.json
 {
@@ -777,6 +803,7 @@ timestamp,session_id,domain,method,url,status_code,status,content_type,request_s
 ```
 
 ### 6. Dual Logging System
+
 ```bash
 # Console (minimal level)
 [15:30:43] INFO: >> GET /users/octocat
@@ -800,6 +827,7 @@ Response body (290 bytes):
 ```
 
 ### 7. Advanced Filtering Output
+
 ```bash
 # Only show GitHub API traffic, exclude images, limit body size
 httpseal --filter-domain api.github.com --exclude-content-type image/ --max-body-size 1024 -v
@@ -828,3 +856,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 **WIP Status**: HTTPSeal is currently under active development (Work In Progress). Features may be incomplete, unstable, or contain bugs. This tool is provided "as-is" without any warranties.
 
 HTTPSeal is designed for legitimate development, debugging, and authorized security testing purposes only. Users are responsible for ensuring compliance with applicable laws and regulations when using this tool.
+
