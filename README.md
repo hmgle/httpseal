@@ -7,41 +7,25 @@ HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS/HTTP 
 
 ## About the Name
 
-**HTTPSeal** combines two powerful concepts:
+**HTTPSeal** combines "HTTP/HTTPS" with "Seal" - representing the secure encapsulation and isolation of process traffic within a controlled environment. The name is a playful homage to **Wireshark** 🦈, the legendary network analysis tool. While Wireshark hunts through entire network oceans, HTTPSeal is the specialized marine hunter that focuses precisely on HTTP/HTTPS streams within isolated process territories.
 
-- **HTTPS**: The secure web protocol this tool specializes in intercepting and analyzing
-- **HTTP**: Plain text web protocol also supported for complete traffic visibility
-- **Seal**: Representing the secure **encapsulation** and **isolation** of process traffic within a controlled environment
+## Key Advantages
 
-The name embodies the tool's core philosophy: creating a "sealed" environment where HTTPS/HTTP traffic can be precisely monitored without affecting the broader system—like sealing a process in an isolated chamber for examination.
+🎯 **Unique Process Isolation**: Unlike global proxy tools (mitmproxy, Burp), HTTPSeal only affects processes it launches - zero impact on your system or other applications
 
-### A Playful Nod to Wireshark
+⚡ **Zero Configuration**: Target applications need no proxy settings or modifications - just run them with HTTPSeal and they're automatically intercepted
 
-Yes, we'll admit it—**HTTPSeal** deliberately echoes the naming pattern of **Wireshark**, the legendary network analysis tool! 🦈
+🔐 **Advanced Certificate Management**: Fully automatic CA handling with XDG-compliant persistent storage (default: `$XDG_CONFIG_HOME/httpseal/ca/`) - certificates reused between sessions for better performance
 
-Just as Wireshark combines:
-- **Wire** (network cables/connections) + **Shark** (a fierce predator that hunts through data)
+🔧 **Linux-Native Architecture**: Built specifically for Linux using namespace isolation, user namespaces, and bind mounts for maximum security and efficiency
 
-HTTPSeal playfully follows suit:
-- **HTTPS** (secure web protocol) + **Seal** (an agile marine hunter that "seals" its prey)
+🦈 **Revolutionary Wireshark Integration**: HTTP mirror server creates real-time plain HTTP replicas of decrypted HTTPS traffic - analyze TLS 1.3 traffic in Wireshark with zero complexity
 
-While Wireshark is the apex predator of the entire network ocean, HTTPSeal is the specialized hunter that focuses precisely on HTTPS/HTTP streams within isolated process territories. Think of it as evolving from a broad-spectrum network shark to a precision-targeted process seal! 🌊
+📊 **Professional Output Formats**: Native HAR (HTTP Archive) support for browser dev tools, plus JSON, CSV, and text with intelligent dual logging system
 
-## Features
+🌐 **Enterprise-Ready SOCKS5**: Built-in SOCKS5 proxy support with authentication for bypassing network restrictions
 
-- **Process-specific interception**: Only captures traffic from processes launched by HTTPSeal
-- **Zero-configuration transparency**: Target applications require no proxy configuration
-- **HTTPS/TLS decryption**: Performs MITM with dynamic certificate generation for encrypted traffic
-- **HTTP plain text handling**: Direct interception and analysis of unencrypted HTTP traffic
-- **Non-root execution**: Uses Linux Capabilities instead of full root privileges
-- **Real-time traffic display**: Shows HTTP/HTTPS request and response details
-- **Multiple output formats**: Text, JSON, CSV, and HAR (HTTP Archive) with configurable verbosity
-- **Advanced filtering**: Domain filtering, content-type exclusion, body size limits, session tracking
-- **Configuration file support**: JSON configuration with XDG Base Directory compliance
-- **SOCKS5 proxy support**: Full upstream SOCKS5 proxy with authentication for bypassing restrictions
-- **Dual logging system**: Separate console and file logging levels with intelligent defaults
-- **Connection management**: Configurable timeouts, browser detection, smart connection persistence
-- **🔥 Wireshark Integration**: HTTP mirror server for real-time Wireshark analysis of decrypted HTTPS and plain HTTP traffic
+⚙️ **Configuration-Driven**: XDG-compliant JSON configuration files with CLI override capability and intelligent defaults
 
 ## Architecture
 
@@ -170,8 +154,8 @@ httpseal --log-level minimal --file-log-level verbose -o detailed.log -- curl ht
 # Advanced filtering and connection management
 httpseal --filter-domain github.com --connection-timeout 60 --max-body-size 2048 -- curl https://api.github.com/users/octocat
 
-# Certificate reuse for performance
-httpseal --ca-dir ./my-ca --keep-ca -o traffic.json -- curl https://api.github.com/users/octocat
+# Certificate reuse for performance (automatic with persistent CA directory)
+httpseal --ca-dir ./my-ca -o traffic.json -- curl https://api.github.com/users/octocat
 ```
 
 ## 🌊 Wireshark Integration (HTTP Mirror)
@@ -424,8 +408,8 @@ Network Options:
       --connection-timeout int  Client connection idle timeout in seconds (default 30)
 
 Certificate Management:
-      --ca-dir string          Certificate authority directory (default: auto-generated temp)
-      --keep-ca                Keep CA directory after exit (useful for debugging/reuse)
+      --ca-dir string          Certificate authority directory (default: $XDG_CONFIG_HOME/httpseal/ca/)
+      --keep-ca                Keep CA directory after exit (legacy flag - default behavior now preserves CA)
 
 HTTP Traffic Interception:
       --enable-http            Enable HTTP traffic interception (default: disabled)
@@ -465,17 +449,28 @@ Other Options:
 
 ## Certificate Management
 
-HTTPSeal uses **automatic certificate management** - no manual CA installation required:
+HTTPSeal provides **intelligent, automated certificate management** with persistent storage for optimal performance:
 
-### Fully Automatic Operation
+### Persistent CA Directory (NEW)
 
-HTTPSeal **automatically** handles all certificate management when it runs:
+HTTPSeal now uses **XDG-compliant persistent CA directories** by default:
 
-1. **CA Generation**: Creates a root CA certificate on first run (stored in `ca/` directory)
-2. **Bundle Merging**: Combines HTTPSeal's CA with your system's existing CA certificates  
-3. **Namespace Installation**: Uses bind mounts to overlay the merged CA bundle to `/etc/ssl/certs/ca-certificates.crt` **within the isolated namespace only**
-4. **Environment Setup**: Configures SSL/TLS environment variables (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, etc.)
-5. **Dynamic Certificates**: Generates domain-specific certificates on-demand during interception
+- **Default Location**: `$XDG_CONFIG_HOME/httpseal/ca/` (usually `~/.config/httpseal/ca/`)
+- **Automatic Creation**: Directory created on first run with proper permissions
+- **Certificate Reuse**: Same CA and domain certificates reused between sessions
+- **Performance Boost**: Eliminates certificate regeneration for frequently accessed domains
+- **Graceful Fallback**: Falls back to temporary directories if persistent path unavailable
+
+```bash
+# Default behavior - uses persistent CA directory
+httpseal -- curl https://api.github.com/users/octocat
+
+# First run: Creates ~/.config/httpseal/ca/ and generates certificates
+# Second run: Reuses existing certificates - much faster startup!
+
+# Custom persistent CA directory
+httpseal --ca-dir ./my-ca-store -- curl https://api.github.com
+```
 
 ### Key Benefits
 
@@ -487,29 +482,14 @@ HTTPSeal **automatically** handles all certificate management when it runs:
 
 ✅ **Transparent Operation**: Target applications see the certificates as if they were system-installed
 
-### No System Pollution
-
-Unlike other HTTPS interception tools, HTTPSeal **never modifies your system's certificate store**. All certificate handling happens within the isolated namespace, providing both security and convenience.
-
-### Advanced Certificate Options
-
-```bash
-# Use custom CA directory for certificate reuse
-httpseal --ca-dir ./my-ca -- curl https://api.github.com/users/octocat
-
-# Keep CA directory after exit (useful for debugging or reuse)
-httpseal --keep-ca --ca-dir ./persistent-ca -- curl https://api.github.com/users/octocat
-
-# Reuse existing CA directory for better performance
-httpseal --ca-dir ./existing-ca --keep-ca -- curl https://api.github.com/users/octocat
-```
+✅ **Performance Optimization**: Certificate reuse eliminates regeneration overhead
 
 ### Certificate Directory Behavior
 
-- **Default behavior**: Creates temporary CA directory, automatically cleaned up on exit
-- **Custom CA directory** (`--ca-dir`): Uses specified directory, cleaned up unless `--keep-ca` is used
-- **Keep CA** (`--keep-ca`): Preserves CA directory after exit for reuse in subsequent runs
-- **Performance benefit**: Reusing CA directories avoids regenerating certificates for the same domains
+- **Default**: Uses `$XDG_CONFIG_HOME/httpseal/ca/` - automatically preserved between sessions
+- **Custom CA** (`--ca-dir path`): Uses specified directory - automatically preserved
+- **Temporary Fallback**: If persistent directory creation fails, falls back to temp directory with automatic cleanup
+- **Legacy Compatibility**: `--keep-ca` flag still supported for explicit control
 
 ## Development
 
@@ -603,34 +583,27 @@ make help         # Show all available targets
 
 | Feature | HTTPSeal | mitmproxy | Burp Suite | Wireshark |
 |---------|----------|-----------|-------------|-----------|
-| Process Isolation | ✅ Excellent | ❌ Global proxy | ❌ Global proxy | ❌ System-wide |
-| Zero Config | ✅ Yes | ❌ Proxy setup required | ❌ Proxy setup required | ❌ Certificate import |
-| HTTP/HTTPS Support | ✅ Both protocols | ✅ Both protocols | ✅ Both protocols | ✅ Both protocols |
-| HAR Format Support | ✅ **Native** | ✅ Yes | ✅ Yes | ❌ No |
-| SOCKS5 Proxy | ✅ **Built-in** | ✅ Yes | ✅ Yes | ❌ No |
-| Configuration Files | ✅ **JSON+XDG** | ✅ YAML | ✅ Project files | ❌ No |
-| Wireshark Integration | 🔥 **Native Mirror** | ❌ No | ❌ No | ✅ Self |
-| Cross-Platform | ❌ Linux only | ✅ Yes | ✅ Yes | ✅ Yes |
-| Interactive Editing | ❌ No | ✅ Yes | ✅ Yes | ❌ No |
-| CLI Automation | ✅ **Perfect** | ✅ Good | ❌ Limited | ⚠️ Limited |
-| TLS 1.3 Support | ✅ Full | ✅ Full | ✅ Full | ❌ Limited |
-| Session Tracking | ✅ **Built-in** | ⚠️ Manual | ⚠️ Manual | ❌ No |
-| Dual Logging | ✅ **Advanced** | ❌ Basic | ❌ Basic | ❌ No |
-| Browser Traffic | ❌ Limited | ✅ Excellent | ✅ Excellent | ✅ Good |
+| **Process Isolation** | ✅ **Unique** | ❌ Global proxy | ❌ Global proxy | ❌ System-wide |
+| **Zero Config** | ✅ **Perfect** | ❌ Proxy setup | ❌ Proxy setup | ❌ Certificate import |
+| **Persistent CA** | ✅ **XDG-compliant** | ❌ Session-only | ❌ Manual | ❌ No |
+| **HAR Support** | ✅ **Native** | ✅ Yes | ✅ Yes | ❌ No |
+| **Wireshark Integration** | 🔥 **Native Mirror** | ❌ No | ❌ No | ✅ Self |
+| **SOCKS5 Proxy** | ✅ **Built-in** | ✅ Yes | ✅ Yes | ❌ No |
+| **Configuration Files** | ✅ **JSON+XDG** | ✅ YAML | ✅ Project files | ❌ No |
+| **CLI Automation** | ✅ **Perfect** | ✅ Good | ❌ Limited | ⚠️ Limited |
+| **Linux Optimization** | ✅ **Native** | ⚠️ Cross-platform | ⚠️ Cross-platform | ✅ Good |
 
 ### Best Use Cases
 
 🎯 **Perfect For**:
-- **Linux development and debugging environments** with complete traffic visibility
-- **CLI tool traffic analysis** (`wget`, `curl`, custom applications) with mixed HTTP/HTTPS traffic
-- **HAR-based performance analysis** using browser dev tools and performance monitoring tools
-- **Wireshark-powered network analysis** with zero TLS complexity for both protocols
-- **CI/CD pipeline integration** with structured logging (JSON, CSV, HAR) and session tracking
+- **Linux development and debugging** with zero configuration and automatic certificate management
+- **CLI tool traffic analysis** (`wget`, `curl`, custom applications) with persistent CA storage
+- **HAR-based performance analysis** with browser dev tools integration
+- **Wireshark-powered network analysis** with zero TLS complexity  
+- **CI/CD pipeline integration** with structured logging and session tracking
 - **SOCKS5-enabled environments** requiring proxy bypass for restricted networks
-- **Configuration-driven workflows** with JSON config files and XDG compliance
-- **Malware analysis in isolated environments** (both encrypted and plain text communications)
-- **API integration testing and debugging** across HTTP and HTTPS endpoints with complete session correlation
-- **Security research** requiring both process isolation and dual protocol analysis with advanced filtering
+- **API integration testing** with persistent certificates and advanced filtering
+- **Security research** requiring process isolation and comprehensive traffic analysis
 
 🚫 **Not Suitable For**:
 - Cross-platform development
