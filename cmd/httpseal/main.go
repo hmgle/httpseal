@@ -109,7 +109,7 @@ Examples:
   httpseal --enable-mirror --mirror-port 9090 -- wget https://httpbin.org/get
   
   # Keep CA directory for reuse (avoid regenerating certificates)
-  httpseal --keep-ca --ca-dir ./my-ca -o traffic.json -- curl https://api.github.com/users/octocat
+  httpseal --keep-ca -o traffic.json -- curl https://api.github.com/users/octocat
   
   # Use custom CA directory (will be preserved if --keep-ca is used)
   httpseal --ca-dir /path/to/ca --keep-ca -- wget https://httpbin.org/get
@@ -132,8 +132,8 @@ Examples:
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
-	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: auto-generated temp dir)")
-	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (useful for debugging or reuse)")
+	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: XDG_CONFIG_HOME/httpseal/ca)")
+	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (always true for default persistent directory)")
 
 	// HTTP traffic interception
 	rootCmd.Flags().BoolVar(&enableHTTP, "enable-http", false, "Enable HTTP traffic interception (default: disabled)")
@@ -255,12 +255,22 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	// --- CA Directory Handling ---
 	isTempCADir := false
 	if cfg.CADir == "" {
-		tempDir, err := os.MkdirTemp("", "httpseal-ca-*")
-		if err != nil {
-			return fmt.Errorf("failed to create temporary CA directory: %w", err)
+		// Use XDG-compliant default CA directory for certificate persistence
+		cfg.CADir = config.GetDefaultCADir()
+		
+		// Create directory if it doesn't exist
+		if err := os.MkdirAll(cfg.CADir, 0755); err != nil {
+			// Fallback to temporary directory if XDG path creation fails
+			log.Warn("Failed to create default CA directory %s, using temporary directory: %v", cfg.CADir, err)
+			tempDir, err := os.MkdirTemp("", "httpseal-ca-*")
+			if err != nil {
+				return fmt.Errorf("failed to create temporary CA directory: %w", err)
+			}
+			cfg.CADir = tempDir
+			isTempCADir = true
+		} else {
+			log.Debug("Using persistent CA directory: %s", cfg.CADir)
 		}
-		cfg.CADir = tempDir
-		isTempCADir = true
 	}
 
 	// Defer cleanup immediately after potential creation.

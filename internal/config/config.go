@@ -129,6 +129,11 @@ func GetDefaultConfigPath() string {
 	return filepath.Join(GetConfigDir(), "config.json")
 }
 
+// GetDefaultCADir returns the default CA directory path following XDG spec
+func GetDefaultCADir() string {
+	return filepath.Join(GetConfigDir(), "ca")
+}
+
 // LoadConfigFile loads configuration from a JSON file
 func LoadConfigFile(path string) (*FileConfig, error) {
 	data, err := os.ReadFile(path)
