@@ -20,16 +20,18 @@ const (
 type LogLevel string
 
 const (
-	LogLevelNone    LogLevel = "none"    // No traffic logging
-	LogLevelMinimal LogLevel = "minimal" // Only basic request/response info
-	LogLevelNormal  LogLevel = "normal"  // Headers and summary
-	LogLevelVerbose LogLevel = "verbose" // Everything including full bodies
+	LogLevelNone      LogLevel = "none"      // No traffic logging
+	LogLevelMinimal   LogLevel = "minimal"   // Only basic request/response info
+	LogLevelNormal    LogLevel = "normal"    // Headers and summary
+	LogLevelVerbose   LogLevel = "verbose"   // Everything including text bodies
+	LogLevelExtraVerbose LogLevel = "extra-verbose" // Everything including all bodies (text and binary)
 )
 
 // Config holds the application configuration
 type Config struct {
 	// Network settings
-	Verbose   bool
+	Verbose      bool
+	ExtraVerbose bool // Extra verbose mode (-vv)
 	DNSIP     string
 	DNSPort   int
 	ProxyPort int
@@ -72,7 +74,8 @@ type Config struct {
 // FileConfig represents the configuration file structure with JSON tags
 type FileConfig struct {
 	// Network settings
-	Verbose   *bool   `json:"verbose,omitempty"`
+	Verbose      *bool   `json:"verbose,omitempty"`
+	ExtraVerbose *bool   `json:"extra_verbose,omitempty"`
 	DNSIP     *string `json:"dns_ip,omitempty"`
 	DNSPort   *int    `json:"dns_port,omitempty"`
 	ProxyPort *int    `json:"proxy_port,omitempty"`
@@ -158,6 +161,9 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig) {
 	// Network settings
 	if fileConfig.Verbose != nil && !c.Verbose {
 		c.Verbose = *fileConfig.Verbose
+	}
+	if fileConfig.ExtraVerbose != nil && !c.ExtraVerbose {
+		c.ExtraVerbose = *fileConfig.ExtraVerbose
 	}
 	if fileConfig.DNSIP != nil && c.DNSIP == "127.0.53.1" {
 		c.DNSIP = *fileConfig.DNSIP

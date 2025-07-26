@@ -103,6 +103,12 @@ httpseal --enable-http -- python3 -c "import urllib.request; urllib.request.urlo
 # Verbose mode with all traffic details (HTTPS and HTTP)
 httpseal -v --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
 
+# Extra verbose mode - shows all response bodies including binary content
+httpseal -V -- curl https://httpbin.org/get
+
+# Use -vv as shortcut for extra verbose
+httpseal -vv -- wget https://baidu.com
+
 # Save mixed traffic to file in JSON format
 httpseal --enable-http -o traffic.json --format json -- wget http://httpbin.org/get https://api.github.com/users/octocat
 
@@ -428,11 +434,12 @@ Wireshark Integration:
 Output Options:
   -o, --output string          Output traffic to file (automatically uses verbose level for complete data)
       --format string          Output format: text, json, csv, har (default "text")
-      --log-level string       Console logging level: none, minimal, normal, verbose (default "normal")
-      --file-log-level string  File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose
+      --log-level string       Console logging level: none, minimal, normal, verbose, extra-verbose (default "normal")
+      --file-log-level string  File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose, extra-verbose
       --log-file string        Output system logs to file (separate from traffic data)
   -q, --quiet                  Suppress console output (quiet mode - requires -o)
   -v, --verbose                Enable verbose output
+  -V, --extra-verbose          Enable extra verbose output (includes all response bodies, use -vv as shortcut)
 
 Filtering and Limits:
       --filter-domain strings        Only log traffic for these domains (can be repeated)

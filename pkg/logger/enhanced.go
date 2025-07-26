@@ -34,9 +34,9 @@ type EnhancedLogger struct {
 
 // NewEnhanced creates a new enhanced logger with traffic logging capabilities
 func NewEnhanced(cfg *config.Config) (TrafficLogger, error) {
-	// Create base logger
+	// Create base logger - enable verbose if either Verbose or ExtraVerbose is set
 	baseLogger := &StandardLogger{
-		verbose: cfg.Verbose && !cfg.Quiet,
+		verbose: (cfg.Verbose || cfg.ExtraVerbose) && !cfg.Quiet,
 		logger:  nil,
 	}
 
@@ -177,7 +177,13 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 
 // logTrafficToConsole logs traffic to console based on log level
 func (l *EnhancedLogger) logTrafficToConsole(record *TrafficRecord) {
-	switch l.config.LogLevel {
+	// Determine effective log level - upgrade to extra-verbose if config has ExtraVerbose
+	effectiveLevel := l.config.LogLevel
+	if l.config.ExtraVerbose && effectiveLevel == config.LogLevelVerbose {
+		effectiveLevel = config.LogLevelExtraVerbose
+	}
+
+	switch effectiveLevel {
 	case config.LogLevelMinimal:
 		l.Info(">> %s %s", record.Request.Method, record.Request.URL)
 		l.Info("<< %s %s", record.Response.Proto, record.Response.Status)
@@ -193,12 +199,14 @@ func (l *EnhancedLogger) logTrafficToConsole(record *TrafficRecord) {
 		l.Info("Content-Length: %d", record.Response.BodySize)
 		l.Info("")
 	case config.LogLevelVerbose:
-		l.logTrafficVerbose(record)
+		l.logTrafficVerbose(record, false)
+	case config.LogLevelExtraVerbose:
+		l.logTrafficVerbose(record, true)
 	}
 }
 
 // logTrafficVerbose logs full traffic details including headers and bodies
-func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
+func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies bool) {
 	l.Info(">> Request to %s", record.Domain)
 	l.Info("%s %s %s", record.Request.Method, record.Request.URL, record.Request.Proto)
 	l.Info("Host: %s", record.Request.Host)
@@ -247,15 +255,22 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 			strings.Contains(contentType, "application/javascript") ||
 			strings.Contains(contentType, "application/x-www-form-urlencoded")
 
-		if isTextContent || contentType == "" {
+		// In extra-verbose mode (forceAllBodies=true), show all content
+		// In normal verbose mode, only show text content
+		if forceAllBodies || isTextContent || contentType == "" {
 			body := record.Response.Body
 			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
 				body = body[:l.config.MaxBodySize] + "... (truncated)"
 			}
 			l.Info("Response body (%d bytes):", record.Response.BodySize)
-			l.Info("%s", body)
+			if forceAllBodies && !isTextContent && contentType != "" {
+				// For binary content in extra-verbose mode, show hex representation
+				l.Info("%s [binary content - first 200 chars as hex: %x]", body, []byte(body)[:min(200, len(body))])
+			} else {
+				l.Info("%s", body)
+			}
 		} else {
-			l.Info("Response body: %d bytes of binary data (%s)", record.Response.BodySize, record.Response.ContentType)
+			l.Info("Response body: %d bytes of binary data (%s) - use -V/--extra-verbose to see content", record.Response.BodySize, record.Response.ContentType)
 		}
 	}
 
@@ -301,7 +316,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 	// Apply file log level for body inclusion
 	requestBody := ""
 	responseBody := ""
-	if l.config.FileLogLevel == config.LogLevelVerbose {
+	if l.config.FileLogLevel == config.LogLevelVerbose || l.config.FileLogLevel == config.LogLevelExtraVerbose {
 		requestBody = record.Request.Body
 		responseBody = record.Response.Body
 
@@ -360,6 +375,8 @@ func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 			record.Response.Proto, record.Response.Status,
 			record.Response.ContentType, record.Response.BodySize)
 	case config.LogLevelVerbose:
+		text = l.formatVerboseTrafficTextForFile(record)
+	case config.LogLevelExtraVerbose:
 		text = l.formatVerboseTrafficTextForFile(record)
 	default:
 		// Fallback to summary format
@@ -537,6 +554,14 @@ func (l *EnhancedLogger) Close() error {
 }
 
 // Helper functions
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // generateSessionID generates a unique session ID for this run
 func generateSessionID() string {

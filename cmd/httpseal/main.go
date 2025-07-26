@@ -23,7 +23,8 @@ const (
 
 var (
 	// Network settings
-	verbose   bool
+	verbose      bool
+	extraVerbose bool
 	dnsIP     string
 	dnsPort   int
 	proxyPort int
@@ -81,6 +82,9 @@ Examples:
   # Verbose mode with all traffic details
   httpseal -v -- curl -v https://httpbin.org/get
   
+  # Extra verbose mode - shows all response bodies including binary content
+  httpseal -V -- curl https://httpbin.org/get
+  
   # Save traffic to file with complete data (auto-enables verbose for file)
   httpseal -o traffic.json --format json -- wget https://baidu.com
   
@@ -129,6 +133,7 @@ Examples:
 
 	// Network settings
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.Flags().BoolVarP(&extraVerbose, "extra-verbose", "V", false, "Enable extra verbose output (includes all response bodies)")
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
@@ -173,6 +178,32 @@ Examples:
 }
 
 func runHTTPSeal(cmd *cobra.Command, args []string) error {
+	// Handle -vv as shorthand for --extra-verbose
+	if cmd.Flags().Changed("verbose") {
+		// Count how many times -v was specified by checking if we got multiple calls
+		if cmd.Flag("verbose").Value.String() == "true" {
+			// Check if user wants double verbose by looking at the command line
+			for _, arg := range os.Args {
+				if arg == "-vv" || arg == "-vvv" {
+					// Enable extra verbose for -vv or -vvv
+					extraVerbose = true
+					verbose = true
+					break
+				}
+				// Also handle combined flags like -qvv
+				if strings.Contains(arg, "vv") && strings.HasPrefix(arg, "-") {
+					// Count v's in the flag
+					vCount := strings.Count(arg, "v")
+					if vCount >= 2 {
+						extraVerbose = true
+						verbose = true
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// Load configuration file
 	if err := loadConfigFile(); err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
@@ -202,10 +233,19 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Auto-upgrade log level if extra-verbose is enabled
+	effectiveLogLevel := logLevel
+	if extraVerbose && effectiveLogLevel == "normal" {
+		effectiveLogLevel = "extra-verbose"
+	} else if extraVerbose && effectiveLogLevel == "verbose" {
+		effectiveLogLevel = "extra-verbose"
+	}
+
 	// Initialize configuration
 	cfg := &config.Config{
 		// Network settings
-		Verbose:   verbose,
+		Verbose:      verbose,
+		ExtraVerbose: extraVerbose,
 		DNSIP:     dnsIP,
 		DNSPort:   dnsPort,
 		ProxyPort: proxyPort,
@@ -232,7 +272,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		// Traffic logging and output
 		OutputFile:          outputFile,
 		OutputFormat:        config.OutputFormat(outputFormat),
-		LogLevel:            config.LogLevel(logLevel),
+		LogLevel:            config.LogLevel(effectiveLogLevel),
 		FileLogLevel:        config.LogLevel(effectiveFileLogLevel),
 		LogFile:             logFile,
 		Quiet:               quiet,
@@ -429,6 +469,7 @@ func loadConfigFile() error {
 	tempConfig := &config.Config{
 		// Set CLI values with their current state
 		Verbose:             verbose,
+		ExtraVerbose:        extraVerbose,
 		DNSIP:               dnsIP,
 		DNSPort:             dnsPort,
 		ProxyPort:           proxyPort,
@@ -459,6 +500,7 @@ func loadConfigFile() error {
 
 	// Update global variables with merged values
 	verbose = tempConfig.Verbose
+	extraVerbose = tempConfig.ExtraVerbose
 	dnsIP = tempConfig.DNSIP
 	dnsPort = tempConfig.DNSPort
 	proxyPort = tempConfig.ProxyPort
@@ -488,6 +530,11 @@ func loadConfigFile() error {
 
 // validateFlags validates command line flags
 func validateFlags() error {
+	// Auto-enable verbose if extra-verbose is set
+	if extraVerbose {
+		verbose = true
+	}
+
 	// Validate output format
 	validFormats := []string{"text", "json", "csv", "har"}
 	valid := false
@@ -502,7 +549,7 @@ func validateFlags() error {
 	}
 
 	// Validate log level
-	validLevels := []string{"none", "minimal", "normal", "verbose"}
+	validLevels := []string{"none", "minimal", "normal", "verbose", "extra-verbose"}
 	valid = false
 	for _, l := range validLevels {
 		if logLevel == l {
