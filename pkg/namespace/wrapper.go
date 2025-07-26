@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/hmgle/httpseal/internal/config"
@@ -16,11 +16,11 @@ import (
 
 // Wrapper handles process execution in isolated namespaces
 type Wrapper struct {
-	config       *config.Config
-	logger       logger.Logger
-	cmd          *exec.Cmd
-	tempDir      string
-	useUserNS    bool // whether to use user namespace approach
+	config    *config.Config
+	logger    logger.Logger
+	cmd       *exec.Cmd
+	tempDir   string
+	useUserNS bool // whether to use user namespace approach
 }
 
 // NewWrapper creates a new namespace wrapper
@@ -38,14 +38,14 @@ func supportsUserNamespace() bool {
 	if runtime.GOOS != "linux" {
 		return false
 	}
-	
+
 	// Check if user namespace creation is allowed
 	if data, err := os.ReadFile("/proc/sys/user/max_user_namespaces"); err == nil {
 		if string(data)[0] == '0' {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -73,10 +73,10 @@ func (w *Wrapper) Stop() {
 	if w.cmd != nil && w.cmd.Process != nil {
 		// First try graceful termination
 		w.cmd.Process.Signal(syscall.SIGTERM)
-		
+
 		// Give it a moment to exit gracefully
 		time.Sleep(200 * time.Millisecond)
-		
+
 		// If it's still running, force kill
 		if w.cmd.ProcessState == nil {
 			w.cmd.Process.Signal(syscall.SIGKILL)
@@ -113,7 +113,7 @@ func (w *Wrapper) prepareIsolatedFiles() error {
 func (w *Wrapper) prepareResolvConf() error {
 	resolveContent := fmt.Sprintf("nameserver %s\n", w.config.DNSIP)
 	resolveFile := filepath.Join(w.tempDir, "resolv.conf")
-	
+
 	if err := os.WriteFile(resolveFile, []byte(resolveContent), 0644); err != nil {
 		return fmt.Errorf("failed to write resolv.conf: %w", err)
 	}
@@ -287,10 +287,10 @@ func (w *Wrapper) setupBindMounts() error {
 // createWrapperScript creates a shell script that sets up bind mounts and execs the target command
 func (w *Wrapper) createWrapperScript() (string, error) {
 	wrapperPath := filepath.Join(w.tempDir, "wrapper.sh")
-	
+
 	// Determine output redirection based on quiet mode
 	var mountOutput, debugRedirect string
-	
+
 	if w.config.Quiet {
 		mountOutput = "2>/dev/null"
 		debugRedirect = ">/dev/null 2>&1"
@@ -301,8 +301,8 @@ func (w *Wrapper) createWrapperScript() (string, error) {
 		mountOutput = "2>/dev/null"
 		debugRedirect = ">/dev/null 2>&1"
 	}
-	
-	// Create additional debug commands for capabilities mode  
+
+	// Create additional debug commands for capabilities mode
 	var debugExtended string
 	if w.config.Verbose && !w.config.Quiet {
 		debugExtended = `
@@ -385,38 +385,38 @@ done
 %s
 # Execute the original command with proper argument preservation
 exec "$CMD" "${CMDARGS[@]}"
-`, 
-		mountOutput,     // mount --make-rprivate
-		debugRedirect,   // touch resolv.conf
-		mountOutput,     // mount resolv.conf  
-		func() string { 
-			if w.config.Verbose && !w.config.Quiet { 
+`,
+		mountOutput,   // mount --make-rprivate
+		debugRedirect, // touch resolv.conf
+		mountOutput,   // mount resolv.conf
+		func() string {
+			if w.config.Verbose && !w.config.Quiet {
 				return "echo \"[DEBUG] Mounted resolv.conf, content:\"; cat /etc/resolv.conf"
 			}
 			return ""
 		}(), // debug resolv.conf
-		debugRedirect,   // mkdir ssl/certs
-		debugRedirect,   // touch ca-certificates.crt
-		mountOutput,     // mount ca-certificates.crt
-		debugRedirect,   // touch nsswitch.conf
-		mountOutput,     // mount nsswitch.conf
-		func() string { 
-			if w.config.Verbose && !w.config.Quiet { 
+		debugRedirect, // mkdir ssl/certs
+		debugRedirect, // touch ca-certificates.crt
+		mountOutput,   // mount ca-certificates.crt
+		debugRedirect, // touch nsswitch.conf
+		mountOutput,   // mount nsswitch.conf
+		func() string {
+			if w.config.Verbose && !w.config.Quiet {
 				return "echo \"[DEBUG] Mounted custom nsswitch.conf\""
 			}
 			return ""
 		}(), // debug nsswitch
-		debugRedirect,   // touch hosts
-		mountOutput,     // mount hosts
-		func() string { 
-			if w.config.Verbose && !w.config.Quiet { 
+		debugRedirect, // touch hosts
+		mountOutput,   // mount hosts
+		func() string {
+			if w.config.Verbose && !w.config.Quiet {
 				return "echo \"[DEBUG] Mounted custom hosts file\"; echo \"[DEBUG] Hosts file content:\"; head -20 /etc/hosts"
 			}
 			return ""
 		}(), // debug hosts
-		debugExtended,   // extended debug commands
-		func() string { 
-			if w.config.Verbose && !w.config.Quiet { 
+		debugExtended, // extended debug commands
+		func() string {
+			if w.config.Verbose && !w.config.Quiet {
 				return "echo \"[DEBUG] Executing: $CMD $ARGS\""
 			}
 			return ""
@@ -466,7 +466,7 @@ func (w *Wrapper) execWithUserNamespace() error {
 		"CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
 		"REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
 		// GnuTLS environment variables for wget
-		"GNUTLS_SYSTEM_PRIORITY_FILE=/etc/ssl/certs/ca-certificates.crt", 
+		"GNUTLS_SYSTEM_PRIORITY_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"CA_CERTIFICATE_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"GNUTLS_SYSTEM_TRUST_FILE=/etc/ssl/certs/ca-certificates.crt",
 		// Python requests
@@ -474,14 +474,14 @@ func (w *Wrapper) execWithUserNamespace() error {
 		// Node.js
 		"NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
 		// Disable various caching mechanisms
-		"HOSTALIASES=", // Disable host aliases
+		"HOSTALIASES=",               // Disable host aliases
 		"RES_OPTIONS=no-check-names", // Disable resolver caching
-		"NSCD_DISABLE=1", // Try to disable nscd
+		"NSCD_DISABLE=1",             // Try to disable nscd
 		// Pass original command as environment variables
 		fmt.Sprintf("HTTPSEAL_ORIGINAL_CMD=%s", w.config.Command),
 		fmt.Sprintf("HTTPSEAL_TEMP_DIR=%s", w.tempDir),
 	)
-	
+
 	// Add command arguments as environment variables
 	for i, arg := range w.config.CommandArgs {
 		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_ARG_%d=%s", i, arg))
@@ -504,7 +504,7 @@ func (w *Wrapper) execWithUserNamespace() error {
 // createUserNamespaceScript creates a script for user namespace execution
 func (w *Wrapper) createUserNamespaceScript() (string, error) {
 	wrapperPath := filepath.Join(w.tempDir, "userns_wrapper.sh")
-	
+
 	// Determine output redirection based on quiet mode
 	var mountOutput, debugRedirect string
 	if w.config.Quiet {
@@ -529,7 +529,7 @@ func (w *Wrapper) createUserNamespaceScript() (string, error) {
 		echo "[DEBUG] Running as UID $(id -u), GID $(id -g) in namespace"
 		echo "[DEBUG] Executing: $CMD $ARGS"`)
 	}
-	
+
 	scriptContent := fmt.Sprintf(`#!/bin/bash
 set -e
 
@@ -576,17 +576,17 @@ unshare --user --mount --map-root-user bash -c '
 	
 	# Execute the original command with proper argument preservation
 	exec "$CMD" "${CMDARGS[@]}"
-'`, 
-		mountOutput,     // mount --make-rprivate
-		debugRedirect,   // touch resolv.conf
-		mountOutput,     // mount resolv.conf
-		debugRedirect,   // mkdir ssl/certs
-		debugRedirect,   // touch ca-certificates.crt
-		mountOutput,     // mount ca-certificates.crt
-		debugRedirect,   // touch nsswitch.conf
-		mountOutput,     // mount nsswitch.conf
-		debugRedirect,   // touch hosts
-		mountOutput,     // mount hosts
+'`,
+		mountOutput,   // mount --make-rprivate
+		debugRedirect, // touch resolv.conf
+		mountOutput,   // mount resolv.conf
+		debugRedirect, // mkdir ssl/certs
+		debugRedirect, // touch ca-certificates.crt
+		mountOutput,   // mount ca-certificates.crt
+		debugRedirect, // touch nsswitch.conf
+		mountOutput,   // mount nsswitch.conf
+		debugRedirect, // touch hosts
+		mountOutput,   // mount hosts
 		debugEchos)
 
 	// Write the script
@@ -614,7 +614,7 @@ func (w *Wrapper) execWithCapabilities() error {
 		"CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
 		"REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
 		// GnuTLS environment variables for wget
-		"GNUTLS_SYSTEM_PRIORITY_FILE=/etc/ssl/certs/ca-certificates.crt", 
+		"GNUTLS_SYSTEM_PRIORITY_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"CA_CERTIFICATE_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"GNUTLS_SYSTEM_TRUST_FILE=/etc/ssl/certs/ca-certificates.crt",
 		// Python requests
@@ -644,9 +644,9 @@ func (w *Wrapper) execWithCapabilities() error {
 		fmt.Sprintf("TRACEBIND_ORIGINAL_CMD=%s", w.config.Command),
 		fmt.Sprintf("TRACEBIND_TEMP_DIR=%s", w.tempDir),
 		// Disable various caching mechanisms
-		"HOSTALIASES=", // Disable host aliases
+		"HOSTALIASES=",               // Disable host aliases
 		"RES_OPTIONS=no-check-names", // Disable resolver caching
-		"NSCD_DISABLE=1", // Try to disable nscd
+		"NSCD_DISABLE=1",             // Try to disable nscd
 	)
 	for i, arg := range w.config.CommandArgs {
 		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("TRACEBIND_ARG_%d=%s", i, arg))
@@ -665,8 +665,6 @@ func (w *Wrapper) execWithCapabilities() error {
 	// Wait for the process to complete
 	return w.cmd.Wait()
 }
-
-
 
 // cleanup removes temporary files
 func (w *Wrapper) cleanup() {

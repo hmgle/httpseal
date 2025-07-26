@@ -5,22 +5,22 @@ import (
 	"net"
 	"sync"
 
-	"github.com/miekg/dns"
 	"github.com/hmgle/httpseal/pkg/logger"
+	"github.com/miekg/dns"
 )
 
 // Server implements a DNS server for domain-to-localhost mapping
 type Server struct {
-	dnsIP     string
-	port      int
-	server    *dns.Server
-	logger    logger.Logger
-	
+	dnsIP  string
+	port   int
+	server *dns.Server
+	logger logger.Logger
+
 	// Domain mapping: localhost IP -> real domain
 	domainMap map[string]string
 	// IP allocation tracking
-	nextIP    net.IP
-	mutex     sync.RWMutex
+	nextIP net.IP
+	mutex  sync.RWMutex
 }
 
 // NewServer creates a new DNS server
@@ -71,6 +71,7 @@ func (s *Server) GetDomainForIP(ip string) (string, bool) {
 	return domain, exists
 }
 
+
 // handleDNSRequest handles incoming DNS requests
 func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	msg := new(dns.Msg)
@@ -87,7 +88,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 			// Allocate a new localhost IP for this domain
 			ip := s.allocateIP(domain)
-			
+
 			s.logger.Debug("DNS query for %s -> %s", domain, ip)
 
 			rr := &dns.A{
@@ -114,6 +115,7 @@ func (s *Server) allocateIP(domain string) string {
 	// Check if we already have an IP for this domain
 	for ip, existingDomain := range s.domainMap {
 		if existingDomain == domain {
+			s.logger.Debug("Reusing existing IP %s for domain %s", ip, domain)
 			return ip
 		}
 	}
@@ -121,18 +123,26 @@ func (s *Server) allocateIP(domain string) string {
 	// Allocate new IP
 	ip := s.nextIP.String()
 	s.domainMap[ip] = domain
-	
+	s.logger.Debug("Allocated new IP %s for domain %s", ip, domain)
+
 	// Increment to next IP in 127.0.0.0/8 range
 	s.nextIP = s.incrementIP(s.nextIP)
-	
+
 	return ip
 }
 
 // incrementIP increments an IP address within the 127.0.0.0/8 range
 func (s *Server) incrementIP(ip net.IP) net.IP {
-	nextIP := make(net.IP, len(ip))
-	copy(nextIP, ip)
-	
+	// Ensure we're working with IPv4
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		// Fallback for invalid IP
+		return net.IPv4(127, 0, 0, 2)
+	}
+
+	nextIP := make(net.IP, len(ipv4))
+	copy(nextIP, ipv4)
+
 	// Increment the last octet, then propagate carry
 	for i := len(nextIP) - 1; i >= 0; i-- {
 		nextIP[i]++
@@ -140,12 +150,12 @@ func (s *Server) incrementIP(ip net.IP) net.IP {
 			break
 		}
 	}
-	
+
 	// Ensure we stay in 127.0.0.0/8 range
 	if nextIP[0] != 127 {
 		// Wrap around to 127.0.0.2
 		nextIP = net.IPv4(127, 0, 0, 2)
 	}
-	
+
 	return nextIP
 }

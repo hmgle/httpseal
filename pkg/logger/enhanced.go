@@ -24,11 +24,12 @@ type TrafficLogger interface {
 // EnhancedLogger implements both Logger and TrafficLogger interfaces
 type EnhancedLogger struct {
 	*StandardLogger
-	config       *config.Config
-	outputFile   *os.File
-	csvWriter    *csv.Writer
+	config        *config.Config
+	outputFile    *os.File
+	csvWriter     *csv.Writer
 	systemLogFile *os.File
-	sessionID    string
+	sessionID     string
+	harLog        *HAR
 }
 
 // NewEnhanced creates a new enhanced logger with traffic logging capabilities
@@ -38,32 +39,33 @@ func NewEnhanced(cfg *config.Config) (TrafficLogger, error) {
 		verbose: cfg.Verbose && !cfg.Quiet,
 		logger:  nil,
 	}
-	
+
 	// Setup console output (disabled in quiet mode)
 	if !cfg.Quiet {
 		baseLogger.logger = log.New(os.Stdout, "", 0)
 	}
-	
+
 	enhanced := &EnhancedLogger{
 		StandardLogger: baseLogger,
 		config:         cfg,
 		sessionID:      generateSessionID(),
+		harLog:         NewHAR(),
 	}
-	
+
 	// Setup traffic file output if specified
 	if cfg.OutputFile != "" {
 		if err := enhanced.setupFileOutput(); err != nil {
 			return nil, fmt.Errorf("failed to setup traffic file output: %w", err)
 		}
 	}
-	
+
 	// Setup system log file output if specified
 	if cfg.LogFile != "" {
 		if err := enhanced.setupSystemLogFile(); err != nil {
 			return nil, fmt.Errorf("failed to setup system log file: %w", err)
 		}
 	}
-	
+
 	return enhanced, nil
 }
 
@@ -74,7 +76,7 @@ func (l *EnhancedLogger) setupFileOutput() error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Initialize format-specific writers
 	switch l.config.OutputFormat {
 	case config.FormatCSV:
@@ -89,8 +91,10 @@ func (l *EnhancedLogger) setupFileOutput() error {
 		// JSON format doesn't need special initialization
 	case config.FormatText:
 		// Text format doesn't need special initialization
+	case config.FormatHAR:
+		// HAR format doesn't need special initialization - we'll write complete HAR at the end
 	}
-	
+
 	return nil
 }
 
@@ -101,7 +105,7 @@ func (l *EnhancedLogger) setupSystemLogFile() error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Redirect base logger to system log file instead of stdout
 	if l.StandardLogger.logger != nil {
 		l.StandardLogger.logger = log.New(l.systemLogFile, "", log.LstdFlags)
@@ -109,7 +113,7 @@ func (l *EnhancedLogger) setupSystemLogFile() error {
 		// Even in quiet mode, allow system logging to file
 		l.StandardLogger.logger = log.New(l.systemLogFile, "", log.LstdFlags)
 	}
-	
+
 	return nil
 }
 
@@ -119,20 +123,20 @@ func (l *EnhancedLogger) LogTraffic(record *TrafficRecord) error {
 	if !l.shouldLogTraffic(record) {
 		return nil
 	}
-	
+
 	// Set session ID
 	record.SessionID = l.sessionID
-	
+
 	// Log to console (if not quiet)
 	if !l.config.Quiet {
 		l.logTrafficToConsole(record)
 	}
-	
+
 	// Log to file (if configured)
 	if l.outputFile != nil {
 		return l.logTrafficToFile(record)
 	}
-	
+
 	return nil
 }
 
@@ -141,11 +145,11 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 	// Check if either console or file logging is enabled
 	consoleEnabled := l.config.LogLevel != config.LogLevelNone && !l.config.Quiet
 	fileEnabled := l.config.FileLogLevel != config.LogLevelNone && l.outputFile != nil
-	
+
 	if !consoleEnabled && !fileEnabled {
 		return false
 	}
-	
+
 	// Check domain filter
 	if len(l.config.FilterDomains) > 0 {
 		found := false
@@ -159,7 +163,7 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 			return false
 		}
 	}
-	
+
 	// Check content type exclusion
 	contentType := strings.ToLower(record.Response.ContentType)
 	for _, excludeType := range l.config.ExcludeContentTypes {
@@ -167,7 +171,7 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -198,7 +202,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 	l.Info(">> Request to %s", record.Domain)
 	l.Info("%s %s %s", record.Request.Method, record.Request.URL, record.Request.Proto)
 	l.Info("Host: %s", record.Request.Host)
-	
+
 	// Log request headers
 	for name, value := range record.Request.Headers {
 		if name == "Host" {
@@ -207,7 +211,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 			l.Debug("%s: %s", name, value)
 		}
 	}
-	
+
 	// Log request body if present (with size limit)
 	if record.Request.Body != "" {
 		body := record.Request.Body
@@ -217,12 +221,12 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 		l.Info("Request body (%d bytes):", record.Request.BodySize)
 		l.Info("%s", body)
 	}
-	
+
 	l.Info("")
-	
+
 	l.Info("<< Response from %s", record.Domain)
 	l.Info("%s %s", record.Response.Proto, record.Response.Status)
-	
+
 	// Log response headers
 	for name, value := range record.Response.Headers {
 		if name == "Content-Type" || name == "Content-Length" {
@@ -231,18 +235,18 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 			l.Debug("%s: %s", name, value)
 		}
 	}
-	
+
 	// Log response body if present (with size limit and content type filtering)
 	if record.Response.Body != "" {
 		contentType := strings.ToLower(record.Response.ContentType)
-		
+
 		// Check if content should be logged based on type
 		isTextContent := strings.Contains(contentType, "text/") ||
 			strings.Contains(contentType, "application/json") ||
 			strings.Contains(contentType, "application/xml") ||
 			strings.Contains(contentType, "application/javascript") ||
 			strings.Contains(contentType, "application/x-www-form-urlencoded")
-		
+
 		if isTextContent || contentType == "" {
 			body := record.Response.Body
 			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
@@ -254,7 +258,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord) {
 			l.Info("Response body: %d bytes of binary data (%s)", record.Response.BodySize, record.Response.ContentType)
 		}
 	}
-	
+
 	l.Info("")
 }
 
@@ -264,7 +268,7 @@ func (l *EnhancedLogger) logTrafficToFile(record *TrafficRecord) error {
 	if l.config.FileLogLevel == config.LogLevelNone {
 		return nil
 	}
-	
+
 	switch l.config.OutputFormat {
 	case config.FormatJSON:
 		return l.logTrafficAsJSON(record)
@@ -272,6 +276,8 @@ func (l *EnhancedLogger) logTrafficToFile(record *TrafficRecord) error {
 		return l.logTrafficAsCSV(record)
 	case config.FormatText:
 		return l.logTrafficAsText(record)
+	case config.FormatHAR:
+		return l.logTrafficAsHAR(record)
 	}
 	return nil
 }
@@ -291,14 +297,14 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 	// Format headers as JSON strings for CSV
 	requestHeaders, _ := json.Marshal(record.Request.Headers)
 	responseHeaders, _ := json.Marshal(record.Response.Headers)
-	
+
 	// Apply file log level for body inclusion
 	requestBody := ""
 	responseBody := ""
 	if l.config.FileLogLevel == config.LogLevelVerbose {
 		requestBody = record.Request.Body
 		responseBody = record.Response.Body
-		
+
 		// Apply size limits
 		if l.config.MaxBodySize > 0 {
 			if len(requestBody) > l.config.MaxBodySize {
@@ -309,7 +315,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 			}
 		}
 	}
-	
+
 	row := []string{
 		record.Timestamp.Format(time.RFC3339),
 		record.SessionID,
@@ -327,7 +333,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		requestBody,
 		responseBody,
 	}
-	
+
 	if err := l.csvWriter.Write(row); err != nil {
 		return err
 	}
@@ -338,7 +344,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 // logTrafficAsText logs traffic as human-readable text
 func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 	var text string
-	
+
 	// Use detailed format based on file log level, regardless of quiet mode for file output
 	switch l.config.FileLogLevel {
 	case config.LogLevelMinimal:
@@ -370,7 +376,7 @@ func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 			record.Duration,
 		)
 	}
-	
+
 	_, err := l.outputFile.WriteString(text)
 	return err
 }
@@ -378,17 +384,17 @@ func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 // formatVerboseTrafficText formats traffic in verbose mode for console output
 func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string {
 	var builder strings.Builder
-	
+
 	// Request section
 	builder.WriteString(fmt.Sprintf("[%s] >> Request to %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
 	builder.WriteString(fmt.Sprintf("%s %s %s\n", record.Request.Method, record.Request.URL, record.Request.Proto))
 	builder.WriteString(fmt.Sprintf("Host: %s\n", record.Request.Host))
-	
+
 	// Request headers
 	for name, value := range record.Request.Headers {
 		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
 	}
-	
+
 	// Request body
 	if record.Request.Body != "" {
 		body := record.Request.Body
@@ -397,29 +403,29 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 		}
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
-	
+
 	builder.WriteString("\n")
-	
+
 	// Response section
 	builder.WriteString(fmt.Sprintf("[%s] << Response from %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
 	builder.WriteString(fmt.Sprintf("%s %s\n", record.Response.Proto, record.Response.Status))
-	
+
 	// Response headers
 	for name, value := range record.Response.Headers {
 		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
 	}
-	
+
 	// Response body
 	if record.Response.Body != "" {
 		contentType := strings.ToLower(record.Response.ContentType)
-		
+
 		// Check if content should be logged based on type
 		isTextContent := strings.Contains(contentType, "text/") ||
 			strings.Contains(contentType, "application/json") ||
 			strings.Contains(contentType, "application/xml") ||
 			strings.Contains(contentType, "application/javascript") ||
 			strings.Contains(contentType, "application/x-www-form-urlencoded")
-		
+
 		if isTextContent || contentType == "" {
 			body := record.Response.Body
 			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
@@ -430,7 +436,7 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 			builder.WriteString(fmt.Sprintf("Response body: %d bytes of binary data (%s)\n", record.Response.BodySize, record.Response.ContentType))
 		}
 	}
-	
+
 	builder.WriteString("\n")
 	return builder.String()
 }
@@ -438,17 +444,17 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 // formatVerboseTrafficTextForFile formats traffic in verbose mode for file output
 func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) string {
 	var builder strings.Builder
-	
+
 	// Request section
 	builder.WriteString(fmt.Sprintf("[%s] >> Request to %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
 	builder.WriteString(fmt.Sprintf("%s %s %s\n", record.Request.Method, record.Request.URL, record.Request.Proto))
 	builder.WriteString(fmt.Sprintf("Host: %s\n", record.Request.Host))
-	
+
 	// Request headers
 	for name, value := range record.Request.Headers {
 		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
 	}
-	
+
 	// Request body (always include for file output in verbose mode)
 	if record.Request.Body != "" {
 		body := record.Request.Body
@@ -457,18 +463,18 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 		}
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
-	
+
 	builder.WriteString("\n")
-	
+
 	// Response section
 	builder.WriteString(fmt.Sprintf("[%s] << Response from %s\n", record.Timestamp.Format("15:04:05"), record.Domain))
 	builder.WriteString(fmt.Sprintf("%s %s\n", record.Response.Proto, record.Response.Status))
-	
+
 	// Response headers
 	for name, value := range record.Response.Headers {
 		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
 	}
-	
+
 	// Response body (always include for file output in verbose mode)
 	if record.Response.Body != "" {
 		body := record.Response.Body
@@ -477,31 +483,56 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 		}
 		builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
 	}
-	
+
 	builder.WriteString("\n")
 	return builder.String()
+}
+
+// logTrafficAsHAR accumulates traffic records in HAR format
+func (l *EnhancedLogger) logTrafficAsHAR(record *TrafficRecord) error {
+	// Convert TrafficRecord to HAR entry
+	harEntry := ConvertTrafficRecordToHAREntry(record)
+	
+	// Add entry to HAR log
+	l.harLog.Log.Entries = append(l.harLog.Log.Entries, harEntry)
+	
+	// Note: We don't write to file immediately for HAR format
+	// The complete HAR will be written when Close() is called
+	return nil
 }
 
 // Close closes the traffic logger and flushes any buffered data
 func (l *EnhancedLogger) Close() error {
 	var lastErr error
-	
+
 	if l.csvWriter != nil {
 		l.csvWriter.Flush()
 	}
-	
+
+	// Write complete HAR file if using HAR format
+	if l.config.OutputFormat == config.FormatHAR && l.outputFile != nil && len(l.harLog.Log.Entries) > 0 {
+		harBytes, err := l.harLog.ToJSON()
+		if err != nil {
+			lastErr = err
+		} else {
+			if _, err := l.outputFile.Write(harBytes); err != nil {
+				lastErr = err
+			}
+		}
+	}
+
 	if l.outputFile != nil {
 		if err := l.outputFile.Close(); err != nil {
 			lastErr = err
 		}
 	}
-	
+
 	if l.systemLogFile != nil {
 		if err := l.systemLogFile.Close(); err != nil {
 			lastErr = err
 		}
 	}
-	
+
 	return lastErr
 }
 

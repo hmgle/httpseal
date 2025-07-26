@@ -8,9 +8,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/net/proxy"
+
+	"github.com/hmgle/httpseal/internal/config"
 	"github.com/hmgle/httpseal/pkg/cert"
 	"github.com/hmgle/httpseal/pkg/dns"
 	"github.com/hmgle/httpseal/pkg/logger"
@@ -19,43 +23,46 @@ import (
 
 // Server implements an HTTPS/HTTP proxy server for traffic interception
 type Server struct {
-	port         int
-	listener     net.Listener
-	ca           *cert.CA
-	dnsServer    *dns.Server
-	logger       logger.Logger
+	port          int
+	listener      net.Listener
+	ca            *cert.CA
+	dnsServer     *dns.Server
+	logger        logger.Logger
 	trafficLogger logger.TrafficLogger
-	mirrorServer *mirror.Server
-	wg           sync.WaitGroup
-	stopCh       chan struct{}
-	isHTTPS      bool // true for HTTPS, false for HTTP
+	mirrorServer  *mirror.Server
+	wg            sync.WaitGroup
+	stopCh        chan struct{}
+	isHTTPS       bool           // true for HTTPS, false for HTTP
+	config        *config.Config // Configuration for SOCKS5 proxy support
 }
 
 // NewServer creates a new HTTPS proxy server
-func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server) *Server {
+func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
 	return &Server{
-		port:         port,
-		ca:           ca,
-		dnsServer:    dnsServer,
-		logger:       trafficLogger, // TrafficLogger implements Logger interface
+		port:          port,
+		ca:            ca,
+		dnsServer:     dnsServer,
+		logger:        trafficLogger, // TrafficLogger implements Logger interface
 		trafficLogger: trafficLogger,
-		mirrorServer: mirrorServer,
-		stopCh:       make(chan struct{}),
-		isHTTPS:      true,
+		mirrorServer:  mirrorServer,
+		stopCh:        make(chan struct{}),
+		isHTTPS:       true,
+		config:        cfg,
 	}
 }
 
 // NewHTTPServer creates a new HTTP proxy server
-func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server) *Server {
+func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
 	return &Server{
-		port:         port,
-		ca:           nil, // No CA needed for HTTP
-		dnsServer:    dnsServer,
-		logger:       trafficLogger, // TrafficLogger implements Logger interface
+		port:          port,
+		ca:            nil, // No CA needed for HTTP
+		dnsServer:     dnsServer,
+		logger:        trafficLogger, // TrafficLogger implements Logger interface
 		trafficLogger: trafficLogger,
-		mirrorServer: mirrorServer,
-		stopCh:       make(chan struct{}),
-		isHTTPS:      false,
+		mirrorServer:  mirrorServer,
+		stopCh:        make(chan struct{}),
+		isHTTPS:       false,
+		config:        cfg,
 	}
 }
 
@@ -160,21 +167,39 @@ func (s *Server) handleHTTPConnection(clientConn net.Conn, realDomain string) {
 
 // handleHTTPRequests handles HTTP requests over the given connection
 func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme string) {
+	// Get connection timeout from configuration (default 30 seconds)
+	connectionTimeout := time.Duration(s.config.ConnectionTimeout) * time.Second
+	if connectionTimeout <= 0 {
+		connectionTimeout = 30 * time.Second // fallback default
+	}
+	
 	for {
+		// Set read deadline to detect idle connections
+		conn.SetReadDeadline(time.Now().Add(connectionTimeout))
+		
 		// Create a buffered reader for parsing HTTP requests
 		reader := bufio.NewReader(conn)
-		
+
 		// Parse the HTTP request
 		req, err := http.ReadRequest(reader)
 		if err != nil {
 			if err == io.EOF {
+				s.logger.Debug("Client closed connection (EOF)")
 				break // Client closed connection
+			}
+			// Check for timeout errors
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				s.logger.Debug("Connection timeout - closing connection")
+				break
 			}
 			s.logger.Error("Failed to parse HTTP request: %v", err)
 			return
 		}
+		
+		// Clear read deadline for request processing
+		conn.SetReadDeadline(time.Time{})
 
-		// Read and preserve request body for logging and forwarding  
+		// Read and preserve request body for logging and forwarding
 		var requestBody []byte
 		if req.Body != nil {
 			requestBody, err = io.ReadAll(req.Body)
@@ -192,7 +217,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		startTime := time.Now()
 		resp, err := s.forwardRequest(req, realDomain, requestBody, scheme)
 		duration := time.Since(startTime)
-		
+
 		if err != nil {
 			s.logger.Error("Failed to forward request to %s: %v", realDomain, err)
 			return
@@ -231,11 +256,32 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		}
 		resp.Body.Close()
 
-		// If this was not a keep-alive connection, close it
-		if req.Header.Get("Connection") == "close" || req.Proto == "HTTP/1.0" {
+		// Check if connection should be closed
+		shouldClose := req.Header.Get("Connection") == "close" || 
+			req.Proto == "HTTP/1.0" ||
+			resp.Header.Get("Connection") == "close"
+		
+		// For non-browser clients (like curl), be more aggressive about closing connections
+		// after single requests to prevent hanging
+		userAgent := req.Header.Get("User-Agent")
+		if shouldClose || (userAgent != "" && !isWebBrowser(userAgent)) {
+			s.logger.Debug("Closing connection after response (Connection: %s, Proto: %s, UA: %s)", 
+				req.Header.Get("Connection"), req.Proto, userAgent)
 			break
 		}
 	}
+}
+
+// isWebBrowser checks if the User-Agent indicates a web browser
+func isWebBrowser(userAgent string) bool {
+	userAgent = strings.ToLower(userAgent)
+	browsers := []string{"mozilla", "chrome", "safari", "firefox", "edge", "opera"}
+	for _, browser := range browsers {
+		if strings.Contains(userAgent, browser) {
+			return true
+		}
+	}
+	return false
 }
 
 // createTLSConfig creates TLS configuration with dynamic certificate for the domain
@@ -258,7 +304,7 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	if len(requestBody) > 0 {
 		body = bytes.NewReader(requestBody)
 	}
-	
+
 	// Create a new request to avoid modifying the original
 	newReq, err := http.NewRequest(req.Method, req.URL.String(), body)
 	if err != nil {
@@ -276,17 +322,44 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	newReq.Host = realDomain
 	newReq.URL.Host = realDomain
 	newReq.URL.Scheme = scheme
-	
+
 	// Clear RequestURI as it's not allowed in client requests
 	newReq.RequestURI = ""
 
-	// Create HTTP client with timeout
+	// Create HTTP client with timeout and optional SOCKS5 proxy support
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false,
+		},
+	}
+
+	// Configure SOCKS5 proxy if enabled
+	if s.config.SOCKS5Enabled && s.config.SOCKS5Address != "" {
+		var auth *proxy.Auth
+		if s.config.SOCKS5Username != "" && s.config.SOCKS5Password != "" {
+			auth = &proxy.Auth{
+				User:     s.config.SOCKS5Username,
+				Password: s.config.SOCKS5Password,
+			}
+		}
+
+		// Create SOCKS5 dialer
+		socks5Dialer, err := proxy.SOCKS5("tcp", s.config.SOCKS5Address, auth, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
+		}
+
+		// Set the dialer for the transport
+		transport.Dial = socks5Dialer.Dial
+		s.logger.Debug("Using SOCKS5 proxy %s for connection to %s", s.config.SOCKS5Address, realDomain)
+	}
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false,
-			},
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Don't follow redirects - return them as-is to maintain transparency
+			return http.ErrUseLastResponse
 		},
 	}
 
@@ -299,19 +372,19 @@ func (s *Server) logRequestWithBody(req *http.Request, domain string, requestBod
 	s.logger.Info("%s %s %s", req.Method, req.URL.Path, req.Proto)
 	s.logger.Info("Host: %s", req.Host)
 	s.logger.Info("User-Agent: %s", req.UserAgent())
-	
+
 	for name, values := range req.Header {
 		for _, value := range values {
 			s.logger.Debug("%s: %s", name, value)
 		}
 	}
-	
+
 	// Log request body if present
 	if len(requestBody) > 0 {
 		s.logger.Info("Request body (%d bytes):", len(requestBody))
 		s.logger.Debug("Body content: %s", string(requestBody))
 	}
-	
+
 	s.logger.Info("")
 }
 
@@ -329,7 +402,7 @@ func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Res
 
 	// Extract response body content with size limit
 	responseBody := string(bodyBytes)
-	
+
 	// Create traffic record
 	record := &logger.TrafficRecord{
 		Timestamp: time.Now(),
@@ -379,4 +452,3 @@ func (s *Server) writeResponseWithBody(conn net.Conn, resp *http.Response, bodyB
 	_, err := conn.Write(bodyBytes)
 	return err
 }
-

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hmgle/httpseal/pkg/logger"
 )
 
 // CA represents a Certificate Authority for generating domain certificates
@@ -24,18 +26,20 @@ type CA struct {
 	certCache  map[string]*tls.Certificate
 	cacheMutex sync.RWMutex
 	isTempDir  bool // Track if this is a temporary directory that should always be cleaned up
+	logger     logger.Logger
 }
 
 // NewCA creates or loads a certificate authority
-func NewCA(caDir string) (*CA, error) {
+func NewCA(caDir string, log logger.Logger) (*CA, error) {
 	// Detect if this is a temporary directory by checking if it's in temp dir
 	// and has the httpseal-ca prefix
 	isTempDir := strings.Contains(caDir, os.TempDir()) && strings.Contains(filepath.Base(caDir), "httpseal-ca-")
-	
+
 	ca := &CA{
 		dir:       caDir,
 		certCache: make(map[string]*tls.Certificate),
 		isTempDir: isTempDir,
+		logger:    log,
 	}
 
 	if err := os.MkdirAll(caDir, 0755); err != nil {
@@ -113,7 +117,7 @@ func (ca *CA) createCA() error {
 		return err
 	}
 
-	fmt.Printf("Created new CA certificate: %s\n", filepath.Join(ca.dir, "ca.crt"))
+	ca.logger.Info("Created new CA certificate: %s", filepath.Join(ca.dir, "ca.crt"))
 
 	return nil
 }
@@ -275,4 +279,3 @@ func (ca *CA) Cleanup() error {
 func (ca *CA) GetCACertPath() string {
 	return filepath.Join(ca.dir, "ca.crt")
 }
-

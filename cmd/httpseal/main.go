@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/hmgle/httpseal/internal/config"
 	"github.com/hmgle/httpseal/pkg/cert"
 	"github.com/hmgle/httpseal/pkg/dns"
@@ -16,6 +15,7 @@ import (
 	"github.com/hmgle/httpseal/pkg/mirror"
 	"github.com/hmgle/httpseal/pkg/namespace"
 	"github.com/hmgle/httpseal/pkg/proxy"
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -24,17 +24,26 @@ const (
 
 var (
 	// Network settings
-	verbose bool
-	dnsIP   string
-	dnsPort int
+	verbose   bool
+	dnsIP     string
+	dnsPort   int
 	proxyPort int
-	caDir   string
-	keepCA  bool
-	
+	caDir     string
+	keepCA    bool
+
 	// HTTP traffic interception
 	enableHTTP bool
 	httpPort   int
-	
+
+	// Connection settings
+	connectionTimeout int
+
+	// SOCKS5 proxy settings
+	socks5Enabled  bool
+	socks5Address  string
+	socks5Username string
+	socks5Password string
+
 	// Traffic logging and output
 	outputFile          string
 	outputFormat        string
@@ -45,10 +54,13 @@ var (
 	maxBodySize         int
 	filterDomains       []string
 	excludeContentTypes []string
-	
+
 	// Wireshark integration
 	enableMirror bool
 	mirrorPort   int
+
+	// Configuration file
+	configFile string
 )
 
 func main() {
@@ -88,6 +100,9 @@ Examples:
   # CSV format with complete request/response data
   httpseal -o complete.csv --format csv -- wget https://httpbin.org/json
   
+  # HAR format for browser dev tools and performance analysis
+  httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
+  
   # Enable Wireshark integration - mirror HTTPS traffic as HTTP on port 8080
   httpseal --enable-mirror -- curl https://api.github.com/users/octocat
   
@@ -98,7 +113,16 @@ Examples:
   httpseal --keep-ca --ca-dir ./my-ca -o traffic.json -- curl https://api.github.com/users/octocat
   
   # Use custom CA directory (will be preserved if --keep-ca is used)
-  httpseal --ca-dir /path/to/ca --keep-ca -- wget https://httpbin.org/get`,
+  httpseal --ca-dir /path/to/ca --keep-ca -- wget https://httpbin.org/get
+  
+  # Use SOCKS5 proxy for upstream connections (useful in mainland China)
+  httpseal --socks5-addr 127.0.0.1:1080 -- curl https://www.google.com
+  
+  # SOCKS5 proxy with authentication (auto-enabled when address is provided)
+  httpseal --socks5-addr 127.0.0.1:1080 --socks5-user myuser --socks5-pass mypass -- wget https://github.com
+  
+  # Explicit SOCKS5 enable flag (uses default address 127.0.0.1:1080)
+  httpseal --socks5 -- curl https://www.google.com`,
 		Version: version,
 		Args:    cobra.MinimumNArgs(1),
 		RunE:    runHTTPSeal,
@@ -111,14 +135,23 @@ Examples:
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
 	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: auto-generated temp dir)")
 	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (useful for debugging or reuse)")
-	
+
 	// HTTP traffic interception
 	rootCmd.Flags().BoolVar(&enableHTTP, "enable-http", false, "Enable HTTP traffic interception (default: disabled)")
 	rootCmd.Flags().IntVar(&httpPort, "http-port", 80, "HTTP proxy port")
-	
+
+	// Connection settings
+	rootCmd.Flags().IntVar(&connectionTimeout, "connection-timeout", 30, "Client connection idle timeout in seconds")
+
+	// SOCKS5 proxy settings
+	rootCmd.Flags().BoolVar(&socks5Enabled, "socks5", false, "Enable SOCKS5 proxy with default address (127.0.0.1:1080)")
+	rootCmd.Flags().StringVar(&socks5Address, "socks5-addr", "127.0.0.1:1080", "SOCKS5 proxy address (auto-enables SOCKS5 when specified)")
+	rootCmd.Flags().StringVar(&socks5Username, "socks5-user", "", "SOCKS5 username for authentication (optional)")
+	rootCmd.Flags().StringVar(&socks5Password, "socks5-pass", "", "SOCKS5 password for authentication (optional)")
+
 	// Traffic logging and output
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output traffic to file (automatically uses verbose level for complete data)")
-	rootCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text, json, csv")
+	rootCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text, json, csv, har")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "normal", "Console logging level: none, minimal, normal, verbose")
 	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose")
 	rootCmd.Flags().StringVar(&logFile, "log-file", "", "Output system logs to file (separate from traffic data)")
@@ -126,10 +159,13 @@ Examples:
 	rootCmd.Flags().IntVar(&maxBodySize, "max-body-size", 0, "Maximum response body size to log (bytes, 0=unlimited)")
 	rootCmd.Flags().StringSliceVar(&filterDomains, "filter-domain", []string{}, "Only log traffic for these domains (can be repeated)")
 	rootCmd.Flags().StringSliceVar(&excludeContentTypes, "exclude-content-type", []string{}, "Exclude these content types from logging")
-	
+
 	// Wireshark integration
 	rootCmd.Flags().BoolVar(&enableMirror, "enable-mirror", false, "Enable HTTP mirror server for Wireshark analysis")
 	rootCmd.Flags().IntVar(&mirrorPort, "mirror-port", 8080, "HTTP mirror server port for Wireshark capture")
+
+	// Configuration file
+	rootCmd.Flags().StringVarP(&configFile, "config", "c", "", "Configuration file path (default: XDG_CONFIG_HOME/httpseal/config.json)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -138,6 +174,11 @@ Examples:
 }
 
 func runHTTPSeal(cmd *cobra.Command, args []string) error {
+	// Load configuration file
+	if err := loadConfigFile(); err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
 	// Validate parameters
 	if err := validateFlags(); err != nil {
 		return err
@@ -163,24 +204,42 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		effectiveCADir = tempDir
 	}
 
+	// Auto-enable SOCKS5 if any SOCKS5 parameters are provided
+	effectiveSocks5Enabled := socks5Enabled
+	if !effectiveSocks5Enabled {
+		// Check if user provided any SOCKS5-related parameters
+		if cmd.Flags().Changed("socks5-addr") || cmd.Flags().Changed("socks5-user") || cmd.Flags().Changed("socks5-pass") {
+			effectiveSocks5Enabled = true
+		}
+	}
+
 	// Initialize configuration
 	cfg := &config.Config{
 		// Network settings
-		Verbose:     verbose,
-		DNSIP:       dnsIP,
-		DNSPort:     dnsPort,
-		ProxyPort:   proxyPort,
-		CADir:       effectiveCADir,
-		KeepCA:      keepCA,
-		
+		Verbose:   verbose,
+		DNSIP:     dnsIP,
+		DNSPort:   dnsPort,
+		ProxyPort: proxyPort,
+		CADir:     effectiveCADir,
+		KeepCA:    keepCA,
+
 		// HTTP traffic interception
-		EnableHTTP:  enableHTTP,
-		HTTPPort:    httpPort,
-		
+		EnableHTTP: enableHTTP,
+		HTTPPort:   httpPort,
+
+		// Connection settings
+		ConnectionTimeout: connectionTimeout,
+
+		// SOCKS5 proxy settings
+		SOCKS5Enabled:  effectiveSocks5Enabled,
+		SOCKS5Address:  socks5Address,
+		SOCKS5Username: socks5Username,
+		SOCKS5Password: socks5Password,
+
 		// Command execution
 		Command:     args[0],
 		CommandArgs: args[1:],
-		
+
 		// Traffic logging and output
 		OutputFile:          outputFile,
 		OutputFormat:        config.OutputFormat(outputFormat),
@@ -191,7 +250,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		MaxBodySize:         maxBodySize,
 		FilterDomains:       filterDomains,
 		ExcludeContentTypes: excludeContentTypes,
-		
+
 		// Wireshark integration
 		EnableMirror: enableMirror,
 		MirrorPort:   mirrorPort,
@@ -203,17 +262,17 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
 	defer log.Close()
-	
+
 	if !cfg.Quiet {
 		log.Info("Starting HTTPSeal v%s", version)
 	}
 
 	// Initialize certificate authority
-	ca, err := cert.NewCA(cfg.CADir)
+	ca, err := cert.NewCA(cfg.CADir, log)
 	if err != nil {
 		return fmt.Errorf("failed to initialize CA: %w", err)
 	}
-	
+
 	// Ensure CA cleanup on exit
 	defer func() {
 		// Always cleanup temp directories, respect --keep-ca for user-specified directories
@@ -231,7 +290,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 
 	// Initialize DNS server
 	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, log)
-	
+
 	// Initialize HTTP mirror server (if enabled)
 	var mirrorServer *mirror.Server
 	if cfg.EnableMirror {
@@ -240,16 +299,25 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 			log.Info("HTTP Mirror Server enabled on port %d for Wireshark analysis", cfg.MirrorPort)
 		}
 	}
-	
+
 	// Initialize HTTPS proxy
-	proxyServer := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer)
-	
+	proxyServer := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer, cfg)
+
 	// Initialize HTTP proxy (if enabled)
 	var httpProxyServer *proxy.Server
 	if cfg.EnableHTTP {
-		httpProxyServer = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer)
+		httpProxyServer = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer, cfg)
 		if !cfg.Quiet {
 			log.Info("HTTP proxy enabled on port %d", cfg.HTTPPort)
+		}
+	}
+
+	// Log SOCKS5 proxy status
+	if cfg.SOCKS5Enabled && !cfg.Quiet {
+		if cfg.SOCKS5Username != "" {
+			log.Info("SOCKS5 proxy enabled: %s (with authentication)", cfg.SOCKS5Address)
+		} else {
+			log.Info("SOCKS5 proxy enabled: %s (no authentication)", cfg.SOCKS5Address)
 		}
 	}
 
@@ -276,7 +344,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start HTTPS proxy: %w", err)
 	}
 	defer proxyServer.Stop()
-	
+
 	// Start HTTP proxy (if enabled)
 	if httpProxyServer != nil {
 		if err := httpProxyServer.Start(); err != nil {
@@ -298,7 +366,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	// Create namespace wrapper and execute command
 	nsWrapper := namespace.NewWrapper(cfg, log)
 	processChan := make(chan error, 1)
-	
+
 	go func() {
 		processChan <- nsWrapper.Execute()
 	}()
@@ -318,7 +386,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 			log.Info("Received signal %v, shutting down...", sig)
 		}
 		nsWrapper.Stop()
-		
+
 		// Wait for graceful shutdown with timeout
 		shutdownDone := make(chan bool, 1)
 		go func() {
@@ -326,7 +394,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 			<-processChan
 			shutdownDone <- true
 		}()
-		
+
 		select {
 		case <-shutdownDone:
 			// Graceful shutdown completed
@@ -341,10 +409,90 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// loadConfigFile loads configuration from file and merges with CLI flags
+func loadConfigFile() error {
+	// Determine config file path
+	configPath := configFile
+	if configPath == "" {
+		configPath = config.GetDefaultConfigPath()
+	}
+
+	// Load configuration file
+	fileConfig, err := config.LoadConfigFile(configPath)
+	if err != nil {
+		// Only return error if a specific config file was requested but failed to load
+		if configFile != "" {
+			return fmt.Errorf("failed to load config file %s: %w", configPath, err)
+		}
+		// If using default path and file doesn't exist, that's OK
+		return nil
+	}
+
+	// Create temporary config to merge file settings
+	tempConfig := &config.Config{
+		// Set CLI values with their current state
+		Verbose:             verbose,
+		DNSIP:               dnsIP,
+		DNSPort:             dnsPort,
+		ProxyPort:           proxyPort,
+		CADir:               caDir,
+		KeepCA:              keepCA,
+		EnableHTTP:          enableHTTP,
+		HTTPPort:            httpPort,
+		ConnectionTimeout:   connectionTimeout,
+		SOCKS5Enabled:       socks5Enabled,
+		SOCKS5Address:       socks5Address,
+		SOCKS5Username:      socks5Username,
+		SOCKS5Password:      socks5Password,
+		OutputFile:          outputFile,
+		OutputFormat:        config.OutputFormat(outputFormat),
+		LogLevel:            config.LogLevel(logLevel),
+		FileLogLevel:        config.LogLevel(fileLogLevel),
+		LogFile:             logFile,
+		Quiet:               quiet,
+		MaxBodySize:         maxBodySize,
+		FilterDomains:       filterDomains,
+		ExcludeContentTypes: excludeContentTypes,
+		EnableMirror:        enableMirror,
+		MirrorPort:          mirrorPort,
+	}
+
+	// Merge file config with CLI config (CLI takes precedence)
+	tempConfig.MergeWithFileConfig(fileConfig)
+
+	// Update global variables with merged values
+	verbose = tempConfig.Verbose
+	dnsIP = tempConfig.DNSIP
+	dnsPort = tempConfig.DNSPort
+	proxyPort = tempConfig.ProxyPort
+	caDir = tempConfig.CADir
+	keepCA = tempConfig.KeepCA
+	enableHTTP = tempConfig.EnableHTTP
+	httpPort = tempConfig.HTTPPort
+	connectionTimeout = tempConfig.ConnectionTimeout
+	socks5Enabled = tempConfig.SOCKS5Enabled
+	socks5Address = tempConfig.SOCKS5Address
+	socks5Username = tempConfig.SOCKS5Username
+	socks5Password = tempConfig.SOCKS5Password
+	outputFile = tempConfig.OutputFile
+	outputFormat = string(tempConfig.OutputFormat)
+	logLevel = string(tempConfig.LogLevel)
+	fileLogLevel = string(tempConfig.FileLogLevel)
+	logFile = tempConfig.LogFile
+	quiet = tempConfig.Quiet
+	maxBodySize = tempConfig.MaxBodySize
+	filterDomains = tempConfig.FilterDomains
+	excludeContentTypes = tempConfig.ExcludeContentTypes
+	enableMirror = tempConfig.EnableMirror
+	mirrorPort = tempConfig.MirrorPort
+
+	return nil
+}
+
 // validateFlags validates command line flags
 func validateFlags() error {
 	// Validate output format
-	validFormats := []string{"text", "json", "csv"}
+	validFormats := []string{"text", "json", "csv", "har"}
 	valid := false
 	for _, f := range validFormats {
 		if outputFormat == f {
@@ -355,7 +503,7 @@ func validateFlags() error {
 	if !valid {
 		return fmt.Errorf("invalid output format '%s', must be one of: %s", outputFormat, strings.Join(validFormats, ", "))
 	}
-	
+
 	// Validate log level
 	validLevels := []string{"none", "minimal", "normal", "verbose"}
 	valid = false
@@ -368,7 +516,7 @@ func validateFlags() error {
 	if !valid {
 		return fmt.Errorf("invalid log level '%s', must be one of: %s", logLevel, strings.Join(validLevels, ", "))
 	}
-	
+
 	// Validate file log level (if specified)
 	if fileLogLevel != "" {
 		valid = false
@@ -382,22 +530,22 @@ func validateFlags() error {
 			return fmt.Errorf("invalid file-log-level '%s', must be one of: %s", fileLogLevel, strings.Join(validLevels, ", "))
 		}
 	}
-	
+
 	// Validate max body size
 	if maxBodySize < 0 {
 		return fmt.Errorf("max-body-size must be >= 0")
 	}
-	
+
 	// If quiet mode is enabled, require output file
 	if quiet && outputFile == "" {
 		return fmt.Errorf("quiet mode (-q) requires output file (-o)")
 	}
-	
+
 	// Validate mirror port
 	if mirrorPort < 1 || mirrorPort > 65535 {
 		return fmt.Errorf("mirror-port must be between 1 and 65535")
 	}
-	
+
 	// Check for port conflicts
 	if enableMirror && mirrorPort == proxyPort {
 		return fmt.Errorf("mirror-port cannot be the same as proxy-port")
@@ -414,6 +562,6 @@ func validateFlags() error {
 	if enableHTTP && enableMirror && httpPort == mirrorPort {
 		return fmt.Errorf("http-port cannot be the same as mirror-port")
 	}
-	
+
 	return nil
 }

@@ -239,7 +239,7 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		
+
 		// Create actual TCP connection to the mirror server
 		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 		if err != nil {
@@ -247,7 +247,7 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 			return
 		}
 		defer conn.Close()
-		
+
 		// Send HTTP request
 		request := fmt.Sprintf("%s %s HTTP/1.1\r\n", record.Method, record.URL)
 		request += fmt.Sprintf("Host: %s\r\n", record.OriginalHost)
@@ -255,20 +255,20 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 		request += "X-HTTPSeal-Mirror-ID: " + strconv.FormatUint(record.ID, 10) + "\r\n"
 		request += "X-HTTPSeal-Timestamp: " + record.Timestamp.Format(time.RFC3339) + "\r\n"
 		request += "Connection: close\r\n"
-		
+
 		// Add filtered original headers
 		for name, values := range record.Headers {
 			// Skip connection-specific and problematic headers
 			lowerName := strings.ToLower(name)
-			if lowerName == "connection" || lowerName == "content-length" || 
-			   lowerName == "transfer-encoding" || lowerName == "host" {
+			if lowerName == "connection" || lowerName == "content-length" ||
+				lowerName == "transfer-encoding" || lowerName == "host" {
 				continue
 			}
 			for _, value := range values {
 				request += fmt.Sprintf("%s: %s\r\n", name, value)
 			}
 		}
-		
+
 		if record.RequestBody != "" {
 			request += fmt.Sprintf("Content-Length: %d\r\n", len(record.RequestBody))
 			request += "\r\n"
@@ -276,17 +276,17 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 		} else {
 			request += "\r\n"
 		}
-		
+
 		// Send request
 		if _, err := conn.Write([]byte(request)); err != nil {
 			s.logger.Error("Failed to send mirror request: %v", err)
 			return
 		}
-		
+
 		// Read response to complete the exchange
 		io.Copy(io.Discard, conn)
 	}()
-	
+
 	return nil
 }
 
