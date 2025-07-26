@@ -2,6 +2,7 @@ package logger
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -16,7 +17,7 @@ type HARLog struct {
 	Version string     `json:"version"`
 	Creator HARCreator `json:"creator"`
 	Browser HARBrowser `json:"browser,omitempty"`
-	Pages   []HARPage  `json:"pages,omitempty"`
+	Pages   []HARPage  `json:"pages"` // Required by HAR 1.2 spec, must not use omitempty
 	Entries []HAREntry `json:"entries"`
 }
 
@@ -36,11 +37,11 @@ type HARBrowser struct {
 
 // HARPage represents a page (optional in HAR)
 type HARPage struct {
-	StartedDateTime time.Time   `json:"startedDateTime"`
-	ID              string      `json:"id"`
-	Title           string      `json:"title"`
-	PageTimings     HARTimings  `json:"pageTimings"`
-	Comment         string      `json:"comment,omitempty"`
+	StartedDateTime time.Time  `json:"startedDateTime"`
+	ID              string     `json:"id"`
+	Title           string     `json:"title"`
+	PageTimings     HARTimings `json:"pageTimings"`
+	Comment         string     `json:"comment,omitempty"`
 }
 
 // HAREntry represents a single HTTP transaction
@@ -59,30 +60,30 @@ type HAREntry struct {
 
 // HARRequest represents the HTTP request details
 type HARRequest struct {
-	Method      string            `json:"method"`
-	URL         string            `json:"url"`
-	HTTPVersion string            `json:"httpVersion"`
-	Cookies     []HARCookie       `json:"cookies"`
-	Headers     []HARNameValue    `json:"headers"`
-	QueryString []HARNameValue    `json:"queryString"`
-	PostData    *HARPostData      `json:"postData,omitempty"`
-	HeadersSize int               `json:"headersSize"`
-	BodySize    int               `json:"bodySize"`
-	Comment     string            `json:"comment,omitempty"`
+	Method      string         `json:"method"`
+	URL         string         `json:"url"`
+	HTTPVersion string         `json:"httpVersion"`
+	Cookies     []HARCookie    `json:"cookies"`
+	Headers     []HARNameValue `json:"headers"`
+	QueryString []HARNameValue `json:"queryString"`
+	PostData    *HARPostData   `json:"postData,omitempty"`
+	HeadersSize int            `json:"headersSize"`
+	BodySize    int            `json:"bodySize"`
+	Comment     string         `json:"comment,omitempty"`
 }
 
 // HARResponse represents the HTTP response details
 type HARResponse struct {
-	Status      int               `json:"status"`
-	StatusText  string            `json:"statusText"`
-	HTTPVersion string            `json:"httpVersion"`
-	Cookies     []HARCookie       `json:"cookies"`
-	Headers     []HARNameValue    `json:"headers"`
-	Content     HARContent        `json:"content"`
-	RedirectURL string            `json:"redirectURL"`
-	HeadersSize int               `json:"headersSize"`
-	BodySize    int               `json:"bodySize"`
-	Comment     string            `json:"comment,omitempty"`
+	Status      int            `json:"status"`
+	StatusText  string         `json:"statusText"`
+	HTTPVersion string         `json:"httpVersion"`
+	Cookies     []HARCookie    `json:"cookies"`
+	Headers     []HARNameValue `json:"headers"`
+	Content     HARContent     `json:"content"`
+	RedirectURL string         `json:"redirectURL"`
+	HeadersSize int            `json:"headersSize"`
+	BodySize    int            `json:"bodySize"`
+	Comment     string         `json:"comment,omitempty"`
 }
 
 // HARCookie represents a cookie
@@ -106,10 +107,10 @@ type HARNameValue struct {
 
 // HARPostData represents POST data
 type HARPostData struct {
-	MimeType string          `json:"mimeType"`
-	Params   []HARPostParam  `json:"params"`
-	Text     string          `json:"text"`
-	Comment  string          `json:"comment,omitempty"`
+	MimeType string         `json:"mimeType"`
+	Params   []HARPostParam `json:"params"`
+	Text     string         `json:"text"`
+	Comment  string         `json:"comment,omitempty"`
 }
 
 // HARPostParam represents a POST parameter
@@ -149,14 +150,14 @@ type HARCacheState struct {
 
 // HARTimings represents timing information
 type HARTimings struct {
-	Blocked int `json:"blocked,omitempty"`
-	DNS     int `json:"dns,omitempty"`
-	Connect int `json:"connect,omitempty"`
-	Send    int `json:"send,omitempty"`
-	Wait    int `json:"wait,omitempty"`
-	Receive int `json:"receive,omitempty"`
-	SSL     int `json:"ssl,omitempty"`
-	Comment string `json:"comment,omitempty"`
+	Blocked int    `json:"blocked"`           // Required by HAR 1.2 spec, must not use omitempty
+	DNS     int    `json:"dns"`               // Required by HAR 1.2 spec, must not use omitempty
+	Connect int    `json:"connect"`           // Required by HAR 1.2 spec, must not use omitempty
+	Send    int    `json:"send"`              // Required by HAR 1.2 spec, must not use omitempty
+	Wait    int    `json:"wait"`              // Required by HAR 1.2 spec, must not use omitempty
+	Receive int    `json:"receive"`           // Required by HAR 1.2 spec, must not use omitempty
+	SSL     int    `json:"ssl,omitempty"`     // Optional field
+	Comment string `json:"comment,omitempty"` // Optional field
 }
 
 // NewHAR creates a new HAR structure with proper initialization
@@ -214,13 +215,16 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 		}
 	}
 
+	// Build absolute URL for HAR compliance
+	absoluteURL := buildAbsoluteURL(record.Domain, record.Request.URL, record.Request.Headers)
+
 	// Create HAR entry
 	entry := HAREntry{
 		StartedDateTime: record.Timestamp,
 		Time:            float64(record.Duration.Milliseconds()),
 		Request: HARRequest{
 			Method:      record.Request.Method,
-			URL:         record.Request.URL,
+			URL:         absoluteURL,
 			HTTPVersion: convertProtoToVersion(record.Request.Proto),
 			Cookies:     []HARCookie{}, // Could be enhanced to parse cookies
 			Headers:     requestHeaders,
@@ -248,9 +252,13 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 			// Default empty cache info
 		},
 		Timings: HARTimings{
-			// For HTTPSeal, we only have total time
-			// Could be enhanced with more detailed timing if available
-			Wait: int(record.Duration.Milliseconds()),
+			// Complete HAR 1.2 compliant timings object
+			Blocked: 0,  // Not measured, using 0
+			DNS:     -1, // Not applicable for intercepted traffic
+			Connect: -1, // Not applicable for intercepted traffic
+			Send:    0,  // Not measured separately, using 0
+			Wait:    int(record.Duration.Milliseconds()),
+			Receive: 0, // Not measured separately, using 0
 		},
 		ServerIPAddress: "", // Could be populated if available
 		Connection:      "", // Could be populated if connection reuse info is available
@@ -260,6 +268,32 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 }
 
 // Helper functions
+
+// buildAbsoluteURL constructs an absolute URL from domain and request URL
+func buildAbsoluteURL(domain, requestURL string, headers map[string]string) string {
+	// If the requestURL is already absolute, return it as-is
+	if strings.HasPrefix(requestURL, "http://") || strings.HasPrefix(requestURL, "https://") {
+		return requestURL
+	}
+
+	// Determine scheme based on context or headers
+	scheme := "https" // Default to HTTPS for HTTPSeal
+
+	// Check if we can determine the scheme from headers or other context
+	// For HTTPSeal, we primarily intercept HTTPS traffic
+	if headers != nil {
+		// We could check for specific headers that indicate HTTP vs HTTPS
+		// But for HTTPSeal's use case, HTTPS is the primary protocol
+	}
+
+	// Ensure requestURL starts with /
+	if !strings.HasPrefix(requestURL, "/") {
+		requestURL = "/" + requestURL
+	}
+
+	// Construct the absolute URL
+	return fmt.Sprintf("%s://%s%s", scheme, domain, requestURL)
+}
 
 // convertProtoToVersion converts HTTP protocol string to version
 func convertProtoToVersion(proto string) string {
@@ -297,3 +331,4 @@ func calculateHeadersSize(headers map[string]string) int {
 func (h *HAR) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(h, "", "  ")
 }
+
