@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -170,32 +172,28 @@ func (w *Wrapper) prepareNSSwitch() error {
 	// Read the original nsswitch.conf
 	originalContent, err := os.ReadFile("/etc/nsswitch.conf")
 	if err != nil {
-		return fmt.Errorf("failed to read original nsswitch.conf: %w", err)
+		// If the file doesn't exist, we can't safely modify it.
+		// However, we can create a minimal one for basic functionality.
+		w.logger.Warn("failed to read original /etc/nsswitch.conf: %v. Creating a minimal version.", err)
+		originalContent = []byte("passwd: files\ngroup: files\nshadow: files\n")
 	}
 
-	// Replace the hosts line to prioritize DNS
-	customContent := string(originalContent)
-	// Replace hosts line with DNS-first configuration
-	customContent = `# /etc/nsswitch.conf - Modified by HTTPSeal for DNS priority
-#
-# Configuration modified to prioritize DNS resolution over /etc/hosts
-# This ensures domain name resolution goes through HTTPSeal's DNS server
+	contentStr := string(originalContent)
+	customContent := ""
 
-passwd:         compat
-group:          compat
-shadow:         compat
+	// This regex finds the "hosts:" line. It's multi-line enabled.
+	hostsRegex := regexp.MustCompile(`(?m)^\s*hosts:.*`)
+	newHostsLine := "hosts:          dns files"
 
-# Modified: DNS first, then files, no mdns to avoid bypass
-hosts:          dns files
-networks:       files
-
-protocols:      db files
-services:       db files
-ethers:         db files
-rpc:            db files
-
-netgroup:       nis
-`
+	if hostsRegex.MatchString(contentStr) {
+		// If hosts line exists, replace it
+		customContent = hostsRegex.ReplaceAllString(contentStr, newHostsLine)
+		w.logger.Debug("Replaced hosts line in nsswitch.conf")
+	} else {
+		// If no hosts line, append it
+		customContent = strings.TrimSpace(contentStr) + "\n" + newHostsLine + "\n"
+		w.logger.Debug("Appended hosts line to nsswitch.conf")
+	}
 
 	// Write the custom nsswitch.conf
 	nsSwitchFile := filepath.Join(w.tempDir, "nsswitch.conf")
@@ -375,7 +373,7 @@ declare -a CMDARGS
 i=0
 while [ $i -lt $TRACEBIND_ARG_COUNT ]; do
     var_name="TRACEBIND_ARG_$i"
-    eval "arg=\$$var_name"
+    arg="${!var_name}"
     if [ -n "$arg" ]; then
         CMDARGS[$i]="$arg"
     fi
@@ -567,7 +565,7 @@ unshare --user --mount --map-root-user bash -c '
 	i=0
 	while [ $i -lt $HTTPSEAL_ARG_COUNT ]; do
 		var_name="HTTPSEAL_ARG_$i"
-		eval "arg=\$$var_name"
+		arg="${!var_name}"
 		if [ -n "$arg" ]; then
 			CMDARGS[$i]="$arg"
 		fi
