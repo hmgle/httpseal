@@ -9,6 +9,8 @@ HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS/HTTP 
 
 [![asciicast](https://asciinema.org/a/730013.svg)](https://asciinema.org/a/730013)
 
+> **Note**: Any API keys shown in the demo have been removed and invalidated for security purposes.
+
 ## About the Name
 
 **HTTPSeal** combines "HTTP/HTTPS" with "Seal" - representing the secure encapsulation and isolation of process traffic within a controlled environment. The name is a playful homage to **Wireshark** 🦈, the legendary network analysis tool. While Wireshark hunts through entire network oceans, HTTPSeal is the specialized marine hunter that focuses precisely on HTTP/HTTPS streams within isolated process territories.
