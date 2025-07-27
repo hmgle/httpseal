@@ -71,7 +71,7 @@ cd httpseal
 make build
 
 # Install with required capabilities
-make install
+sudo make install
 ```
 
 ### Manual Installation
@@ -80,11 +80,18 @@ make install
 # Build
 go build -o httpseal ./cmd/httpseal
 
-# Install binary
-sudo cp httpseal /usr/local/bin/
+# Install binary to any directory in your PATH (examples shown)
+sudo cp httpseal /usr/local/bin/          # System-wide installation
+# OR
+cp httpseal ~/.local/bin/                 # User-local installation
+# OR 
+cp httpseal /any/directory/in/your/PATH/  # Custom PATH directory
 
-# Set required capability (only CAP_NET_BIND_SERVICE needed)
+# IMPORTANT: Set required capability (only CAP_NET_BIND_SERVICE needed)
+# Replace the path below with your actual installation directory
 sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
+# OR for user-local installation:
+sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/httpseal
 ```
 
 ## Usage
