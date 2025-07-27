@@ -83,15 +83,15 @@ go build -o httpseal ./cmd/httpseal
 # Install binary to any directory in your PATH (examples shown)
 sudo cp httpseal /usr/local/bin/          # System-wide installation
 # OR
-cp httpseal ~/.local/bin/                 # User-local installation
-# OR 
-cp httpseal /any/directory/in/your/PATH/  # Custom PATH directory
+# cp httpseal ~/.local/bin/                 # User-local installation
+# OR
+# cp httpseal /any/directory/in/your/PATH/  # Custom PATH directory
 
 # IMPORTANT: Set required capability (only CAP_NET_BIND_SERVICE needed)
 # Replace the path below with your actual installation directory
 sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
 # OR for user-local installation:
-sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/httpseal
+# sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/httpseal
 ```
 
 ## Usage
@@ -539,6 +539,7 @@ httpseal --ca-dir ./my-ca-store -- curl https://api.github.com
 ```
 httpseal/
 ├── cmd/httpseal/           # Main application entry point
+├── contrib/completion/     # Shell completion scripts
 ├── pkg/
 │   ├── cert/              # Certificate authority and management
 │   ├── dns/               # DNS server component
