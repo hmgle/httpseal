@@ -1,5 +1,7 @@
 # HTTPSeal
 
+English | [简体中文](README-zh.md)
+
 > ⚠️ **Work In Progress (WIP)** ⚠️  
 > HTTPSeal is currently under active development and not yet ready for production use. Features may be incomplete, unstable, or subject to breaking changes. Use at your own risk and expect potential issues. Contributions and feedback are welcome!
 
@@ -538,9 +540,8 @@ httpseal/
 │   ├── namespace/         # Process wrapper and namespace handling
 │   ├── proxy/             # HTTPS proxy server
 │   └── mount/             # OverlayFS mounting operations
-├── internal/
-│   └── config/            # Configuration structures
-└── CLAUDE.md              # Project guidance for AI assistants
+└── internal/
+    └── config/            # Configuration structures
 ```
 
 ### Development Commands
@@ -862,4 +863,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 **WIP Status**: HTTPSeal is currently under active development (Work In Progress). Features may be incomplete, unstable, or contain bugs. This tool is provided "as-is" without any warranties.
 
 HTTPSeal is designed for legitimate development, debugging, and authorized security testing purposes only. Users are responsible for ensuring compliance with applicable laws and regulations when using this tool.
-
