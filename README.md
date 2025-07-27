@@ -19,21 +19,21 @@ HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS/HTTP 
 
 ## Key Advantages
 
-🎯 **Unique Process Isolation**: Unlike global proxy tools (mitmproxy, Burp), HTTPSeal only affects processes it launches - zero impact on your system or other applications
+🎯 **Unique Process Isolation**: Unlike global proxy tools (mitmproxy, Burp), HTTPSeal only affects processes it launches - no impact on your system or other applications
 
-⚡ **Zero Configuration**: Target applications need no proxy settings or modifications - just run them with HTTPSeal and they're automatically intercepted
+⚡ **Simple Configuration**: Target applications need no proxy settings or modifications - just run them with HTTPSeal and they're automatically intercepted
 
 🔐 **Advanced Certificate Management**: Fully automatic CA handling with XDG-compliant persistent storage (default: `$XDG_CONFIG_HOME/httpseal/ca/`) - certificates reused between sessions for better performance
 
 🔧 **Linux-Native Architecture**: Built specifically for Linux using namespace isolation, user namespaces, and bind mounts for maximum security and efficiency
 
-🦈 **Revolutionary Wireshark Integration**: HTTP mirror server creates real-time plain HTTP replicas of decrypted HTTPS traffic - analyze TLS 1.3 traffic in Wireshark with zero complexity
+🦈 **Wireshark Integration**: HTTP mirror server creates real-time plain HTTP replicas of decrypted HTTPS traffic - analyze TLS 1.3 traffic in Wireshark with minimal setup
 
-📊 **Professional Output Formats**: Native HAR (HTTP Archive) support for browser dev tools, plus JSON, CSV, and text with intelligent dual logging system
+📊 **Multiple Output Formats**: Native HAR (HTTP Archive) support for browser dev tools, plus JSON, CSV, and text with dual logging system
 
-🌐 **Enterprise-Ready SOCKS5**: Built-in SOCKS5 proxy support with authentication for bypassing network restrictions
+🌐 **SOCKS5 Proxy Support**: Built-in SOCKS5 proxy support with authentication for bypassing network restrictions
 
-⚙️ **Configuration-Driven**: XDG-compliant JSON configuration files with CLI override capability and intelligent defaults
+⚙️ **Configuration-Driven**: XDG-compliant JSON configuration files with CLI override capability and practical defaults
 
 ## Architecture
 
@@ -46,7 +46,7 @@ HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP inter
 5. **HTTP Proxy**: Intercepts plain HTTP traffic on port 80 (when enabled)
 6. **Certificate Authority**: Dynamically generates and caches certificates for target domains (HTTPS only)
 7. **Automatic CA Integration**: Merges HTTPSeal CA with system CA bundle in isolated namespace
-8. **Environment Configuration**: Sets SSL/TLS environment variables for seamless certificate usage
+8. **Environment Configuration**: Sets SSL/TLS environment variables for transparent certificate usage
 
 ## Requirements
 
@@ -181,7 +181,7 @@ httpseal --ca-dir ./my-ca -o traffic.json -- curl https://api.github.com/users/o
 
 ## 🌊 Wireshark Integration (HTTP Mirror)
 
-HTTPSeal features a **revolutionary HTTP Mirror Server** that creates real-time HTTP replicas of decrypted HTTPS traffic and plain HTTP traffic, enabling seamless Wireshark analysis without complex TLS certificate configuration.
+HTTPSeal features an **HTTP Mirror Server** that creates real-time HTTP replicas of decrypted HTTPS traffic and plain HTTP traffic, enabling Wireshark analysis without complex TLS certificate configuration.
 
 ### How It Works
 
@@ -209,11 +209,11 @@ httpseal --enable-mirror -- curl https://api.github.com/users/octocat
 
 ### Mirror Features
 
-- **🔥 Zero TLS Complexity**: No certificate imports, no key files - just capture HTTP traffic
-- **📊 Perfect Protocol Support**: Works with all TLS versions (1.2, 1.3, modern cipher suites)
-- **🎯 Real-time Streaming**: Traffic appears in Wireshark instantly as it's intercepted
-- **🏷️ Enhanced Headers**: Original domain info preserved with `X-HTTPSeal-*` headers
-- **⚡ High Performance**: Minimal overhead, efficient goroutine-based mirroring
+- **🔥 Simplified TLS Analysis**: No certificate imports, no key files - just capture HTTP traffic
+- **📊 Broad Protocol Support**: Works with all TLS versions (1.2, 1.3, modern cipher suites)
+- **🎯 Real-time Streaming**: Traffic appears in Wireshark as it's intercepted
+- **🏷️ Preserved Headers**: Original domain info preserved with `X-HTTPSeal-*` headers
+- **⚡ Efficient Mirroring**: Minimal overhead, goroutine-based mirroring
 
 ### Mirror Options
 
@@ -235,7 +235,7 @@ httpseal --enable-mirror -v --format json -o traffic.json -- <command>
 3. **Run HTTPSeal**: Use `--enable-mirror` flag
 4. **Watch Magic**: See decrypted HTTPS traffic as readable HTTP in Wireshark!
 
-### Why This Is Revolutionary
+### Why This Approach Works Well
 
 **Traditional Wireshark TLS Decryption**:
 
@@ -247,9 +247,9 @@ httpseal --enable-mirror -v --format json -o traffic.json -- <command>
 **HTTPSeal Mirror Approach**:
 
 - ✅ Works with ALL TLS versions and cipher suites
-- ✅ Zero certificate configuration
+- ✅ Minimal certificate configuration
 - ✅ Real-time streaming
-- ✅ Perfect for modern HTTPS (TLS 1.3, ECDHE, etc.)
+- ✅ Works well with modern HTTPS (TLS 1.3, ECDHE, etc.)
 - ✅ Combines HTTPSeal's process isolation with Wireshark's analysis power
 
 ### Example Mirror Headers
@@ -318,7 +318,7 @@ httpseal --config ./config.json --verbose --output traffic.json -- curl https://
 
 ## 🌐 SOCKS5 Proxy Support
 
-HTTPSeal includes comprehensive SOCKS5 proxy support for upstream connections, perfect for bypassing network restrictions or routing traffic through VPNs:
+HTTPSeal includes comprehensive SOCKS5 proxy support for upstream connections, useful for bypassing network restrictions or routing traffic through VPNs:
 
 ### Basic SOCKS5 Usage
 
@@ -361,7 +361,7 @@ HTTPSeal provides multiple output formats with sophisticated logging control:
 
 #### 1. **HAR (HTTP Archive) Format**
 
-Perfect for browser dev tools and performance analysis:
+Suitable for browser dev tools and performance analysis:
 
 ```bash
 httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
@@ -490,7 +490,7 @@ Other Options:
 
 ## Certificate Management
 
-HTTPSeal provides **intelligent, automated certificate management** with persistent storage for optimal performance:
+HTTPSeal provides **automated certificate management** with persistent storage for optimal performance:
 
 ### Persistent CA Directory (NEW)
 
@@ -515,7 +515,7 @@ httpseal --ca-dir ./my-ca-store -- curl https://api.github.com
 
 ### Key Benefits
 
-✅ **Zero Manual Setup**: No need to install CA certificates in your system's trust store
+✅ **Simple Setup**: No need to install CA certificates in your system's trust store
 
 ✅ **Complete Isolation**: CA certificates only exist within HTTPSeal's namespace - your system remains untouched
 
@@ -584,7 +584,7 @@ make help         # Show all available targets
 
 ✅ **Process-Specific Isolation**: Only intercepts traffic from processes launched by HTTPSeal - no system-wide impact
 
-✅ **Zero Configuration**: Target applications require no proxy settings or code modifications
+✅ **Simple Configuration**: Target applications require no proxy settings or code modifications
 
 ✅ **Namespace Security**: Uses Linux mount namespaces for secure isolation without polluting system environment
 
@@ -594,7 +594,7 @@ make help         # Show all available targets
 
 ✅ **Advanced Filtering**: Domain filtering, content-type exclusions, body size limits, and session tracking
 
-✅ **Multiple Output Formats**: Text, JSON, CSV, and HAR (HTTP Archive) with intelligent logging levels
+✅ **Multiple Output Formats**: Text, JSON, CSV, and HAR (HTTP Archive) with flexible logging levels
 
 ✅ **Configuration File Support**: JSON configuration with XDG Base Directory compliance and CLI override capability
 
@@ -625,18 +625,18 @@ make help         # Show all available targets
 | Feature               | HTTPSeal          | mitmproxy       | Burp Suite      |
 | --------------------- | ----------------- | --------------- | --------------- |
 | **Process Isolation** | ✅ **Unique**     | ❌ Global proxy | ❌ Global proxy |
-| **Zero Config**       | ✅ **Perfect**    | ❌ Proxy setup  | ❌ Proxy setup  |
-| **CLI Automation**    | ✅ **Perfect**    | ✅ Good         | ❌ Limited      |
+| **Simple Config**     | ✅ **Excellent**  | ❌ Proxy setup  | ❌ Proxy setup  |
+| **CLI Automation**    | ✅ **Excellent**  | ✅ Good         | ❌ Limited      |
 | **Cross-platform**    | ❌ **Linux Only** | ✅ Yes          | ✅ Yes          |
 
 ### Best Use Cases
 
-🎯 **Perfect For**:
+🎯 **Well-Suited For**:
 
-- **Linux development and debugging** with zero configuration and automatic certificate management
+- **Linux development and debugging** with automatic certificate management
 - **CLI tool traffic analysis** (`wget`, `curl`, custom applications) with persistent CA storage
 - **HAR-based performance analysis** with browser dev tools integration
-- **Wireshark-powered network analysis** with zero TLS complexity
+- **Wireshark-based network analysis** with simplified TLS setup
 - **CI/CD pipeline integration** with structured logging and session tracking
 - **SOCKS5-enabled environments** requiring proxy bypass for restricted networks
 - **API integration testing** with persistent certificates and advanced filtering
@@ -647,7 +647,7 @@ make help         # Show all available targets
 - Cross-platform development (Linux only)
 - Interactive request/response modification
 - Production environment monitoring
-- High-volume or enterprise traffic analysis
+- High-volume or production traffic analysis
 - Web browser traffic (use built-in browser dev tools instead)
 
 ## Browser Traffic Analysis
