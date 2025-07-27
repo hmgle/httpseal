@@ -92,17 +92,17 @@ sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
 ### Basic Usage
 
 ```bash
-# Intercept HTTPS traffic (default behavior)
-httpseal -- wget https://api.github.com/users/octocat
+# Intercept HTTPS traffic
+httpseal -V -- wget https://api.github.com/users/octocat
 
 # Intercept HTTP traffic (requires --enable-http flag)
-httpseal --enable-http -- curl http://httpbin.org/get
+httpseal -V --enable-http -- curl http://httpbin.org/get
 
 # Intercept both HTTPS and HTTP traffic
-httpseal --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
+httpseal -V --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
 
 # Intercept any command with mixed traffic
-httpseal --enable-http -- python3 -c "import urllib.request; urllib.request.urlopen('http://example.com')"
+httpseal -V --enable-http -- python3 -c "import urllib.request; urllib.request.urlopen('http://example.com')"
 ```
 
 ### Advanced Usage
@@ -115,7 +115,7 @@ httpseal -v --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/
 httpseal -V -- curl https://httpbin.org/get
 
 # Use -vv as shortcut for extra verbose
-httpseal -vv -- wget https://baidu.com
+httpseal -vv --enable-http -- wget https://baidu.com
 
 # Save mixed traffic to file in JSON format
 httpseal --enable-http -o traffic.json --format json -- wget http://httpbin.org/get https://api.github.com/users/octocat
