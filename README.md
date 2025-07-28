@@ -620,15 +620,6 @@ make help         # Show all available targets
 
 ❌ **No Interactive Manipulation**: Read-only traffic logging - cannot modify requests/responses in real-time
 
-### Comparison with Other Tools
-
-| Feature               | HTTPSeal          | mitmproxy       | Burp Suite      |
-| --------------------- | ----------------- | --------------- | --------------- |
-| **Process Isolation** | ✅ **Unique**     | ❌ Global proxy | ❌ Global proxy |
-| **Simple Config**     | ✅ **Excellent**  | ❌ Proxy setup  | ❌ Proxy setup  |
-| **CLI Automation**    | ✅ **Excellent**  | ✅ Good         | ❌ Limited      |
-| **Cross-platform**    | ❌ **Linux Only** | ✅ Yes          | ✅ Yes          |
-
 ### Best Use Cases
 
 🎯 **Well-Suited For**:
