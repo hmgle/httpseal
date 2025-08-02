@@ -1,19 +1,56 @@
 package dns
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hmgle/httpseal/pkg/logger"
 	"github.com/miekg/dns"
 )
 
 const (
-	// Base IP for local mapping. Using a less common range to avoid conflicts.
-	baseIP = "127.0.1.1"
+	// Start and end IP addresses for loopback range allocation
+	// Using 127.0.0.1 to 127.255.255.254 to maximize available addresses
+	startIPStr = "127.0.0.1"
+	endIPStr   = "127.255.255.254"
 )
+
+// LoopbackGen manages the generation of loopback IP addresses with improved robustness
+type LoopbackGen struct {
+	counter   atomic.Uint64 // Use Uint64 to prevent overflow in practical scenarios
+	startIP   uint32
+	rangeSize uint32
+}
+
+// NewLoopbackGen creates and initializes a new LoopbackGen instance
+func NewLoopbackGen() *LoopbackGen {
+	startIP := binary.BigEndian.Uint32(net.ParseIP(startIPStr).To4())
+	endIP := binary.BigEndian.Uint32(net.ParseIP(endIPStr).To4())
+
+	return &LoopbackGen{
+		startIP:   startIP,
+		rangeSize: endIP - startIP + 1,
+	}
+}
+
+// GetNextIP returns the next loopback IP address with improved safety
+func (g *LoopbackGen) GetNextIP() net.IP {
+	// Use atomic increment to get next offset safely
+	offset := g.counter.Add(1)
+	
+	// Use modulo to cycle through the range safely, avoiding overflow issues
+	// offset-1 ensures we start from startIP (not startIP+1) on first call
+	ipVal := g.startIP + uint32((offset-1)%uint64(g.rangeSize))
+	
+	// Create IP directly from uint32 to avoid extra allocations
+	ipBytes := [4]byte{}
+	binary.BigEndian.PutUint32(ipBytes[:], ipVal)
+	return net.IP(ipBytes[:])
+}
 
 // Server implements a simple DNS server for hijacking domain lookups
 type Server struct {
@@ -22,11 +59,10 @@ type Server struct {
 	udpServer     *dns.Server
 	tcpServer     *dns.Server
 	logger        logger.Logger
-	ipDomainMap   sync.Map // Maps assigned IP addresses back to domains
-	domainIPMap   sync.Map // Maps domains to their assigned IP addresses
-	nextIP        net.IP
-	ipMutex       sync.Mutex
-	upstreamDNS   string // Upstream DNS server for non-hijacked queries
+	ipDomainMap   sync.Map   // Maps assigned IP addresses back to domains
+	domainIPMap   sync.Map   // Maps domains to their assigned IP addresses
+	ipGen         *LoopbackGen // IP generator for efficient allocation
+	upstreamDNS   string     // Upstream DNS server for non-hijacked queries
 }
 
 // NewServer creates a new DNS server
@@ -35,7 +71,7 @@ func NewServer(ip string, port int, log logger.Logger) *Server {
 		ip:          ip,
 		port:        port,
 		logger:      log,
-		nextIP:      net.ParseIP(baseIP),
+		ipGen:       NewLoopbackGen(),
 		upstreamDNS: "8.8.8.8:53", // Default to Google DNS, can be made configurable
 	}
 }
@@ -125,38 +161,26 @@ func (s *Server) handleHijackQuery(m *dns.Msg, q dns.Question) {
 	// For AAAA, we return an empty success response to prevent IPv6 fallback issues
 }
 
-// assignIP assigns a new unique IP address to a domain
+// assignIP assigns a new unique IP address to a domain using the improved LoopbackGen
 func (s *Server) assignIP(domain string) net.IP {
-	s.ipMutex.Lock()
-	defer s.ipMutex.Unlock()
-
-	// Double-check in case another goroutine assigned it while waiting for the lock
+	// Double-check without lock first (common case optimization)
 	if ip, ok := s.domainIPMap.Load(domain); ok {
 		return net.ParseIP(ip.(string))
 	}
 
-	// Get the next available IP
-	currentIP := make(net.IP, len(s.nextIP))
-	copy(currentIP, s.nextIP)
-
-	// Increment the IP address for the next assignment
-	ipv4 := s.nextIP.To4()
-	for i := len(ipv4) - 1; i >= 1; i-- { // only increment last 3 octets
-		ipv4[i]++
-		if ipv4[i] != 0 {
-			break
-		}
-	}
-	// Ensure we stay in 127.0.0.0/8 range
-	if ipv4[0] != 127 {
-		s.nextIP = net.ParseIP(baseIP) // Reset if we somehow leave the 127/8 range
-	}
-
-	// Store the mapping
+	// Use the IP generator to get the next IP
+	currentIP := s.ipGen.GetNextIP()
 	ipStr := currentIP.String()
-	s.domainIPMap.Store(domain, ipStr)
+	
+	// Use LoadOrStore to handle race conditions elegantly
+	if existingIP, loaded := s.domainIPMap.LoadOrStore(domain, ipStr); loaded {
+		// Another goroutine already assigned an IP to this domain
+		s.logger.Debug("Domain %s already mapped to %s by another goroutine", domain, existingIP.(string))
+		return net.ParseIP(existingIP.(string))
+	}
+	
+	// We successfully stored the new mapping, also store reverse mapping
 	s.ipDomainMap.Store(ipStr, domain)
-
 	s.logger.Info("Mapped domain %s to local IP %s", domain, ipStr)
 	return currentIP
 }
