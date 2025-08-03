@@ -109,9 +109,9 @@ httpseal --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/hea
 httpseal -v --enable-http -- curl -v https://httpbin.org/get
 
 # 超详细模式 - 显示所有响应主体包括二进制内容
-httpseal -V -- curl https://httpbin.org/get
+httpseal -vv -- curl https://httpbin.org/get
 
-# 使用 -vv 作为超详细模式的快捷方式
+# 使用 -vv 作为超详细模式的快捷方式（等同于旧的 -V 标志）
 httpseal -vv -- wget https://baidu.com
 
 # 保存流量到 JSON 格式文件
@@ -260,8 +260,7 @@ Wireshark 集成:
       --format string          输出格式: text, json, csv, har (默认 "text")
       --log-level string       控制台日志级别: none, minimal, normal, verbose
   -q, --quiet                  静默模式 (需要 -o)
-  -v, --verbose                启用详细输出
-  -V, --extra-verbose          启用超详细输出
+  -v, --verbose                启用详细输出 (-v 详细, -vv 超详细)
 
 过滤和限制:
       --filter-domain strings        仅记录这些域的流量
