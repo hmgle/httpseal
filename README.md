@@ -100,16 +100,16 @@ sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
 
 ```bash
 # Intercept HTTPS traffic
-httpseal -V -- wget https://api.github.com/users/octocat
+httpseal -vv -- wget https://api.github.com/users/octocat
 
 # Intercept HTTP traffic (requires --enable-http flag)
-httpseal -V --enable-http -- curl http://httpbin.org/get
+httpseal -vv --enable-http -- curl http://httpbin.org/get
 
 # Intercept both HTTPS and HTTP traffic
-httpseal -V --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
+httpseal -vv --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
 
 # Intercept any command with mixed traffic
-httpseal -V --enable-http -- python3 -c "import urllib.request; urllib.request.urlopen('http://example.com')"
+httpseal -vv --enable-http -- python3 -c "import urllib.request; urllib.request.urlopen('http://example.com')"
 ```
 
 ### Advanced Usage
@@ -119,9 +119,9 @@ httpseal -V --enable-http -- python3 -c "import urllib.request; urllib.request.u
 httpseal -v --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
 
 # Extra verbose mode - shows all response bodies including binary content
-httpseal -V -- curl https://httpbin.org/get
+httpseal -vv -- curl https://httpbin.org/get
 
-# Use -vv as shortcut for extra verbose
+# Use -vv for extra verbose (equivalent to old -V flag)
 httpseal -vv --enable-http -- wget https://baidu.com
 
 # Save mixed traffic to file in JSON format
@@ -472,8 +472,7 @@ Output Options:
       --file-log-level string  File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose, extra-verbose
       --log-file string        Output system logs to file (separate from traffic data)
   -q, --quiet                  Suppress console output (quiet mode - requires -o)
-  -v, --verbose                Enable verbose output
-  -V, --extra-verbose          Enable extra verbose output (includes all response bodies, use -vv as shortcut)
+  -v, --verbose                Enable verbose output (-v for verbose, -vv for extra-verbose)
 
 Filtering and Limits:
       --filter-domain strings        Only log traffic for these domains (can be repeated)

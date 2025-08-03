@@ -132,8 +132,8 @@ Examples:
 	}
 
 	// Network settings
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
-	rootCmd.Flags().BoolVarP(&extraVerbose, "extra-verbose", "V", false, "Enable extra verbose output (includes all response bodies)")
+	rootCmd.Flags().CountP("verbose", "v", "Enable verbose output (-v for verbose, -vv for extra-verbose)")
+	
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
@@ -178,31 +178,9 @@ Examples:
 }
 
 func runHTTPSeal(cmd *cobra.Command, args []string) error {
-	// Handle -vv as shorthand for --extra-verbose
-	if cmd.Flags().Changed("verbose") {
-		// Count how many times -v was specified by checking if we got multiple calls
-		if cmd.Flag("verbose").Value.String() == "true" {
-			// Check if user wants double verbose by looking at the command line
-			for _, arg := range os.Args {
-				if arg == "-vv" || arg == "-vvv" {
-					// Enable extra verbose for -vv or -vvv
-					extraVerbose = true
-					verbose = true
-					break
-				}
-				// Also handle combined flags like -qvv
-				if strings.Contains(arg, "vv") && strings.HasPrefix(arg, "-") {
-					// Count v's in the flag
-					vCount := strings.Count(arg, "v")
-					if vCount >= 2 {
-						extraVerbose = true
-						verbose = true
-						break
-					}
-				}
-			}
-		}
-	}
+	verboseCount, _ := cmd.Flags().GetCount("verbose")
+	verbose = verboseCount > 0
+	extraVerbose = verboseCount > 1
 
 	// Load configuration file
 	if err := loadConfigFile(); err != nil {
@@ -530,11 +508,6 @@ func loadConfigFile() error {
 
 // validateFlags validates command line flags
 func validateFlags() error {
-	// Auto-enable verbose if extra-verbose is set
-	if extraVerbose {
-		verbose = true
-	}
-
 	// Validate output format
 	validFormats := []string{"text", "json", "csv", "har"}
 	valid := false
