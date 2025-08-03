@@ -41,7 +41,6 @@ _httpseal() {
     '--enable-http[Enable HTTP traffic interception]' \
     '--enable-mirror[Enable HTTP mirror server for Wireshark analysis]' \
     '--exclude-content-type[Exclude these content types from logging]:content-type:_values -s , "content types" $common_content_types' \
-    '(-V --extra-verbose)'{-V,--extra-verbose}'[Enable extra verbose output (includes all response bodies)]' \
     '--file-log-level[File logging level]:level:_values "log levels" $log_levels' \
     '--filter-domain[Only log traffic for these domains]:domain:_hosts' \
     '--format[Output format]:format:_values "output formats" $output_formats' \
@@ -50,7 +49,7 @@ _httpseal() {
     '--keep-ca[Keep CA directory after exit]' \
     '--log-file[Output system logs to file]:file:_files' \
     '--log-level[Console logging level]:level:_values "log levels" $log_levels' \
-    '--max-body-size[Maximum response body size to log (bytes, 0=unlimited)]:size:(0 1024 4096 65536)' \
+    '--max-body-size[Maximum request/response body size to log (bytes, 0=unlimited)]:size:(0 1024 4096 65536 10485760)' \
     '--mirror-port[HTTP mirror server port for Wireshark capture]:port:(8080 9090 8000)' \
     '(-o --output)'{-o,--output}'[Output traffic to file]:file:_files' \
     '--proxy-port[HTTPS proxy port]:port:(443 8443)' \
@@ -59,7 +58,7 @@ _httpseal() {
     '--socks5-addr[SOCKS5 proxy address]:address:(127.0.0.1:1080 127.0.0.1:1081)' \
     '--socks5-pass[SOCKS5 password for authentication]:password:' \
     '--socks5-user[SOCKS5 username for authentication]:username:' \
-    '(-v --verbose)'{-v,--verbose}'[Enable verbose output]' \
+    '(-v --verbose)'{-v,--verbose}'[Enable verbose output (-v for verbose, -vv for extra-verbose)]' \
     '--version[Show version]' \
     '*:: :->command_and_args'
 
