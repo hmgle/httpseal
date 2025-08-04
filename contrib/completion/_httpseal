@@ -6,19 +6,6 @@ _httpseal() {
   local context state state_descr line
   typeset -A opt_args
 
-  local -a log_levels=(
-    'none:No logging output'
-    'minimal:Basic request/response info'
-    'normal:Standard logging details'
-    'verbose:Complete request/response data'
-  )
-
-  local -a output_formats=(
-    'text:Human-readable text format'
-    'json:JSON format for programmatic use'
-    'csv:CSV format for spreadsheet analysis'
-    'har:HAR format for browser dev tools'
-  )
 
   local -a common_content_types=(
     'application/json'
@@ -41,14 +28,14 @@ _httpseal() {
     '--enable-http[Enable HTTP traffic interception]' \
     '--enable-mirror[Enable HTTP mirror server for Wireshark analysis]' \
     '--exclude-content-type[Exclude these content types from logging]:content-type:_values -s , "content types" $common_content_types' \
-    '--file-log-level[File logging level]:level:_values "log levels" $log_levels' \
+    '--file-log-level=[File logging level]:level:(none minimal normal verbose)' \
     '--filter-domain[Only log traffic for these domains]:domain:_hosts' \
-    '--format[Output format]:format:_values "output formats" $output_formats' \
+    '--format=[Output format]:format:(text json csv har)' \
     '(-h --help)'{-h,--help}'[Show help]' \
     '--http-port[HTTP proxy port]:port:(80 8080 3128)' \
     '--keep-ca[Keep CA directory after exit]' \
     '--log-file[Output system logs to file]:file:_files' \
-    '--log-level[Console logging level]:level:_values "log levels" $log_levels' \
+    '--log-level=[Console logging level]:level:(none minimal normal verbose)' \
     '--max-body-size[Maximum request/response body size to log (bytes, 0=unlimited)]:size:(0 1024 4096 65536 10485760)' \
     '--mirror-port[HTTP mirror server port for Wireshark capture]:port:(8080 9090 8000)' \
     '(-o --output)'{-o,--output}'[Output traffic to file]:file:_files' \
