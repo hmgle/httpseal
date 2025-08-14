@@ -247,6 +247,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 	// Log response body if present (with size limit and content type filtering)
 	if record.Response.Body != "" {
 		contentType := strings.ToLower(record.Response.ContentType)
+		contentEncoding := record.Response.Headers["Content-Encoding"]
 
 		// Check if content should be logged based on type
 		isTextContent := strings.Contains(contentType, "text/") ||
@@ -262,7 +263,19 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
 				body = body[:l.config.MaxBodySize] + "... (truncated)"
 			}
-			l.Info("Response body (%d bytes):", record.Response.BodySize)
+
+			// Indicate if content was decompressed
+			bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
+			if contentEncoding != "" {
+				// Check if the body appears to be decompressed (not compressed binary)
+				if strings.HasPrefix(body, "[Compressed ") {
+					bodyDescription += fmt.Sprintf(" [%s - decompression failed]", contentEncoding)
+				} else if IsTextLikeContent([]byte(body), record.Response.ContentType) {
+					bodyDescription += fmt.Sprintf(" [decompressed from %s]", contentEncoding)
+				}
+			}
+			l.Info("%s:", bodyDescription)
+
 			if forceAllBodies && !isTextContent && contentType != "" {
 				// For binary content in extra-verbose mode, show hex representation
 				l.Info("%s [binary content - first 200 chars as hex: %x]", body, []byte(body)[:min(200, len(body))])
@@ -270,7 +283,11 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 				l.Info("%s", body)
 			}
 		} else {
-			l.Info("Response body: %d bytes of binary data (%s) - use -V/--extra-verbose to see content", record.Response.BodySize, record.Response.ContentType)
+			compressionNote := ""
+			if contentEncoding != "" {
+				compressionNote = fmt.Sprintf(" (%s compressed)", contentEncoding)
+			}
+			l.Info("Response body: %d bytes of binary data%s (%s) - use -V/--extra-verbose to see content", record.Response.BodySize, compressionNote, record.Response.ContentType)
 		}
 	}
 
@@ -498,7 +515,18 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
 			body = body[:l.config.MaxBodySize] + "... (truncated)"
 		}
-		builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
+
+		// Indicate if content was decompressed
+		bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
+		contentEncoding := record.Response.Headers["Content-Encoding"]
+		if contentEncoding != "" {
+			if strings.HasPrefix(body, "[Compressed ") {
+				bodyDescription += fmt.Sprintf(" [%s - decompression failed]", contentEncoding)
+			} else if IsTextLikeContent([]byte(body), record.Response.ContentType) {
+				bodyDescription += fmt.Sprintf(" [decompressed from %s]", contentEncoding)
+			}
+		}
+		builder.WriteString(fmt.Sprintf("%s:\n%s\n", bodyDescription, body))
 	}
 
 	builder.WriteString("\n")

@@ -412,8 +412,30 @@ func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Res
 	requestBody := string(requestBodyBytes)
 	requestBodySize := len(requestBodyBytes)
 
-	// Extract response body content with size limit
+	// Extract response body content with decompression if needed
 	responseBody := string(bodyBytes)
+	contentEncoding := resp.Header.Get("Content-Encoding")
+
+	// Try to decompress the response body if it's compressed (based on configuration)
+	if contentEncoding != "" && s.config.DecompressResponse {
+		if decompressed, err := logger.DecompressResponse(bodyBytes, contentEncoding); err == nil {
+			// Successfully decompressed - use decompressed content for display
+			responseBody = string(decompressed)
+			s.logger.Debug("Decompressed %s content: %d -> %d bytes", contentEncoding, len(bodyBytes), len(decompressed))
+		} else {
+			// Decompression failed - log the error and use original body
+			s.logger.Debug("Failed to decompress %s content: %v", contentEncoding, err)
+			// For binary/compressed content, show a more helpful message
+			if !logger.IsTextLikeContent(bodyBytes, resp.Header.Get("Content-Type")) {
+				responseBody = fmt.Sprintf("[Compressed %s content - %d bytes - decompression failed: %v]", contentEncoding, len(bodyBytes), err)
+			}
+		}
+	} else if contentEncoding != "" && !s.config.DecompressResponse {
+		// Decompression is disabled - show a helpful message for compressed content
+		if !logger.IsTextLikeContent(bodyBytes, resp.Header.Get("Content-Type")) {
+			responseBody = fmt.Sprintf("[Compressed %s content - %d bytes - decompression disabled]", contentEncoding, len(bodyBytes))
+		}
+	}
 
 	// Create traffic record
 	record := &logger.TrafficRecord{

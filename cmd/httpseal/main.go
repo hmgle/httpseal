@@ -257,6 +257,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		MaxBodySize:         maxBodySize,
 		FilterDomains:       filterDomains,
 		ExcludeContentTypes: excludeContentTypes,
+		DecompressResponse:  true, // Enable response decompression by default
 
 		// Wireshark integration
 		EnableMirror: enableMirror,

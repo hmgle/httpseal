@@ -65,6 +65,7 @@ type Config struct {
 	MaxBodySize         int          // Maximum body size to log (bytes), 0 = unlimited
 	FilterDomains       []string     // Only log these domains (empty = all)
 	ExcludeContentTypes []string     // Exclude these content types
+	DecompressResponse  bool         // Decompress compressed response bodies for logging (default: true)
 
 	// Wireshark integration
 	EnableMirror bool // Enable HTTP mirror server for Wireshark analysis
@@ -105,6 +106,7 @@ type FileConfig struct {
 	MaxBodySize         *int       `json:"max_body_size,omitempty"`
 	FilterDomains       *[]string  `json:"filter_domains,omitempty"`
 	ExcludeContentTypes *[]string  `json:"exclude_content_types,omitempty"`
+	DecompressResponse  *bool      `json:"decompress_response,omitempty"`
 
 	// Wireshark integration
 	EnableMirror *bool `json:"enable_mirror,omitempty"`
@@ -235,6 +237,9 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig) {
 	}
 	if fileConfig.ExcludeContentTypes != nil && len(c.ExcludeContentTypes) == 0 {
 		c.ExcludeContentTypes = *fileConfig.ExcludeContentTypes
+	}
+	if fileConfig.DecompressResponse != nil && c.DecompressResponse {
+		c.DecompressResponse = *fileConfig.DecompressResponse
 	}
 
 	// Wireshark integration

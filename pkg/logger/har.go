@@ -3,6 +3,7 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -240,9 +241,11 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 			Cookies:     []HARCookie{}, // Could be enhanced to parse Set-Cookie headers
 			Headers:     responseHeaders,
 			Content: HARContent{
-				Size:     record.Response.BodySize,
-				MimeType: record.Response.ContentType,
-				Text:     record.Response.Body,
+				Size:        record.Response.BodySize,
+				Compression: calculateCompressionSavings(record.Response.Headers, record.Response.Body),
+				MimeType:    record.Response.ContentType,
+				Text:        record.Response.Body,
+				Encoding:    determineContentEncoding(record.Response.Body),
 			},
 			RedirectURL: "",
 			HeadersSize: calculateHeadersSize(record.Response.Headers),
@@ -325,6 +328,41 @@ func calculateHeadersSize(headers map[string]string) int {
 		size += len(name) + len(value) + 4 // name: value\r\n
 	}
 	return size
+}
+
+// calculateCompressionSavings calculates compression savings for HAR format
+func calculateCompressionSavings(headers map[string]string, decompressedBody string) int {
+	contentEncoding := headers["Content-Encoding"]
+	if contentEncoding == "" {
+		return 0
+	}
+
+	// If the body was successfully decompressed, we can estimate the compression savings
+	// by comparing the original size (from headers) with the decompressed size
+	contentLength := headers["Content-Length"]
+	if contentLength != "" {
+		if originalSize, err := strconv.Atoi(contentLength); err == nil {
+			decompressedSize := len(decompressedBody)
+			if decompressedSize > originalSize {
+				// We have decompressed content, so the compression savings is the difference
+				return decompressedSize - originalSize
+			}
+		}
+	}
+
+	return 0
+}
+
+// determineContentEncoding determines the encoding used for the response body content
+func determineContentEncoding(body string) string {
+	// If body appears to be decompressed text, it's likely UTF-8
+	// If body starts with our compression failure message, it's binary
+	if strings.HasPrefix(body, "[Compressed ") {
+		return "base64" // Indicate that binary content would need base64 encoding
+	}
+
+	// For text content, assume UTF-8
+	return ""
 }
 
 // ToJSON converts HAR to JSON bytes
