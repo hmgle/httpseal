@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/andybalholm/brotli"
 )
 
 // CompressionType represents the type of compression used
@@ -121,17 +123,18 @@ func decompressDeflate(data []byte) ([]byte, error) {
 	return result, nil
 }
 
-// decompressBrotli decompresses brotli-compressed data
-// Note: This is a placeholder. For full brotli support, we would need
-// to import a brotli library like "github.com/andybalholm/brotli"
+// decompressBrotli decompresses brotli-compressed data using using github.com/andybalholm/brotli
 func decompressBrotli(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return data, nil
 	}
 
-	// For now, return an error indicating brotli is not supported
-	// This can be implemented later with proper brotli library
-	return nil, fmt.Errorf("brotli decompression not yet implemented - requires external library")
+	reader := brotli.NewReader(bytes.NewReader(data))
+	result, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress brotli data: %w", err)
+	}
+	return result, nil
 }
 
 // IsTextLikeContent checks if the decompressed content appears to be text
@@ -161,3 +164,4 @@ func IsTextLikeContent(data []byte, contentType string) bool {
 	// If more than 80% of bytes are printable, consider it text-like
 	return float64(printableCount)/float64(len(data)) > 0.8
 }
+

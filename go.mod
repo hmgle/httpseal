@@ -3,6 +3,7 @@ module github.com/hmgle/httpseal
 go 1.24.4
 
 require (
+	github.com/andybalholm/brotli v1.2.0
 	github.com/miekg/dns v1.1.67
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/net v0.40.0
