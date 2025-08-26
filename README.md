@@ -2,9 +2,6 @@
 
 English | [简体中文](README-zh.md)
 
-> ⚠️ **Work In Progress (WIP)** ⚠️  
-> HTTPSeal is currently under active development and not yet ready for production use. Features may be incomplete, unstable, or subject to breaking changes. Use at your own risk and expect potential issues. Contributions and feedback are welcome!
-
 HTTPSeal is a Linux command-line tool for intercepting and analyzing HTTPS/HTTP traffic from specific processes using namespace isolation and DNS hijacking.
 
 ## Demo
@@ -51,14 +48,11 @@ HTTPSeal combines several Linux technologies to create isolated HTTPS/HTTP inter
 ## Requirements
 
 - **Operating System**: Linux (kernel 3.8+ for user namespace support)
-- **Go Version**: 1.24.4 or later
 - **Linux Capabilities**:
   - `CAP_NET_BIND_SERVICE`: For binding to privileged ports (80, 443)
   - HTTPSeal uses user namespace UID mapping for mount operations (no `CAP_SYS_ADMIN` required)
 
 ## Installation
-
-> ⚠️ **Development Version Notice**: This is a work-in-progress build. Expect potential compilation issues, runtime bugs, and incomplete features. The installation process may change as the project evolves.
 
 ### Build from Source
 
@@ -686,7 +680,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 
 ## Security Considerations
 
-> ⚠️ **WIP Security Warning**: As a work-in-progress tool, HTTPSeal may contain security vulnerabilities, incomplete input validation, or unstable certificate handling. Do NOT use in production environments or with sensitive data.
+> ⚠️ **Security Notice**: HTTPSeal is designed for development and testing environments. While thoroughly tested, it performs MITM operations and should be used only for authorized testing purposes. Do NOT use in production environments or with sensitive data.
 
 - **Use only for authorized testing**: HTTPSeal performs MITM attacks on network traffic
 - **Development environments only**: Designed for development and testing scenarios
@@ -857,7 +851,5 @@ httpseal --filter-domain api.github.com --exclude-content-type image/ --max-body
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Disclaimer
-
-**WIP Status**: HTTPSeal is currently under active development (Work In Progress). Features may be incomplete, unstable, or contain bugs. This tool is provided "as-is" without any warranties.
 
 HTTPSeal is designed for legitimate development, debugging, and authorized security testing purposes only. Users are responsible for ensuring compliance with applicable laws and regulations when using this tool.
