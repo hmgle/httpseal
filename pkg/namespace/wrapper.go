@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -485,6 +486,23 @@ func (w *Wrapper) execWithUserNamespace() error {
 	}
 	w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_ARG_COUNT=%d", len(w.config.CommandArgs)))
 
+	hostUID := os.Getuid()
+	hostGID := os.Getgid()
+	w.cmd.Env = append(w.cmd.Env,
+		fmt.Sprintf("HTTPSEAL_HOST_UID=%d", hostUID),
+		fmt.Sprintf("HTTPSEAL_HOST_GID=%d", hostGID),
+	)
+	if currentUser, err := user.Current(); err == nil && currentUser.Username != "" {
+		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_HOST_USER=%s", currentUser.Username))
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_HOST_HOME=%s", home))
+	}
+
+	w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_VERBOSE_MODE=%d", w.getVerboseMode()))
+
+	w.cmd.Env = w.appendCommandSpecificEnv(w.cmd.Env)
+
 	w.logger.Info("Starting process '%s' with user namespace (no privileges required)...", w.config.Command)
 
 	// Start the process
@@ -527,11 +545,70 @@ func (w *Wrapper) createUserNamespaceScript() (string, error) {
 		echo "[DEBUG] Executing: $CMD $ARGS"`)
 	}
 
+	dropPrivileges := `HOST_UID="${HTTPSEAL_HOST_UID:-0}"
+if [ "$HOST_UID" != "0" ]; then
+	HOST_GID="${HTTPSEAL_HOST_GID:-$HOST_UID}"
+	HOST_USER="${HTTPSEAL_HOST_USER:-}"
+	if [ -n "$HTTPSEAL_HOST_HOME" ]; then
+		export HOME="$HTTPSEAL_HOST_HOME"
+	fi
+	if command -v setpriv >/dev/null 2>&1; then
+		TMP_PRIV_OUT="$(mktemp)"
+		set +e
+		setpriv --reuid="$HOST_UID" --regid="$HOST_GID" --clear-groups "$CMD" "${CMDARGS[@]}" 2>"$TMP_PRIV_OUT"
+		STATUS=$?
+		set -e
+		OUTPUT="$(cat "$TMP_PRIV_OUT" 2>/dev/null)"
+		rm -f "$TMP_PRIV_OUT"
+		if [ "$STATUS" -eq 0 ]; then
+			exit 0
+		fi
+		if [ "$STATUS" -ne 127 ] && [ "$STATUS" -ne 126 ]; then
+			[ -n "$OUTPUT" ] && echo "$OUTPUT" >&2
+			exit "$STATUS"
+		fi
+		if [ "${HTTPSEAL_VERBOSE_MODE:-0}" -ne 0 ] && [ -n "$OUTPUT" ]; then
+			echo "[DEBUG] setpriv fallback (status $STATUS): $OUTPUT" >&2
+		fi
+	elif command -v runuser >/dev/null 2>&1 && [ -n "$HOST_USER" ]; then
+		TMP_PRIV_OUT="$(mktemp)"
+		set +e
+		runuser --preserve-environment -u "$HOST_USER" -- "$CMD" "${CMDARGS[@]}" 2>"$TMP_PRIV_OUT"
+		STATUS=$?
+		set -e
+		OUTPUT="$(cat "$TMP_PRIV_OUT" 2>/dev/null)"
+		rm -f "$TMP_PRIV_OUT"
+		if [ "$STATUS" -eq 0 ]; then
+			exit 0
+		fi
+		if [ "$STATUS" -ne 127 ] && [ "$STATUS" -ne 126 ]; then
+			[ -n "$OUTPUT" ] && echo "$OUTPUT" >&2
+			exit "$STATUS"
+		fi
+		if [ "${HTTPSEAL_VERBOSE_MODE:-0}" -ne 0 ] && [ -n "$OUTPUT" ]; then
+			echo "[DEBUG] runuser fallback (status $STATUS): $OUTPUT" >&2
+		fi
+	elif [ "${HTTPSEAL_VERBOSE_MODE:-0}" -ne 0 ]; then
+		echo "[DEBUG] Unable to drop privileges inside namespace; command will run as root" >&2
+	fi
+fi`
+
 	scriptContent := fmt.Sprintf(`#!/bin/bash
 set -e
 
+HOST_UID="${HTTPSEAL_HOST_UID:-0}"
+HOST_GID="${HTTPSEAL_HOST_GID:-$HOST_UID}"
+
+UNSHARE_ARGS=(--user --mount --map-root-user)
+if [ "$HOST_UID" != "0" ]; then
+	UNSHARE_ARGS+=("--map-users=${HOST_UID}:${HOST_UID}:1")
+fi
+if [ "$HOST_GID" != "0" ]; then
+	UNSHARE_ARGS+=("--map-groups=${HOST_GID}:${HOST_GID}:1")
+fi
+
 # Create user and mount namespaces with UID/GID mapping
-unshare --user --mount --map-root-user bash -c '
+unshare "${UNSHARE_ARGS[@]}" bash -c '
 	# Set mount propagation to private
 	mount --make-rprivate / %s || true
 	
@@ -570,8 +647,10 @@ unshare --user --mount --map-root-user bash -c '
 		fi
 		i=$((i + 1))
 	done
-	
+
 	# Execute the original command with proper argument preservation
+	%s
+
 	exec "$CMD" "${CMDARGS[@]}"
 '`,
 		mountOutput,   // mount --make-rprivate
@@ -584,7 +663,8 @@ unshare --user --mount --map-root-user bash -c '
 		mountOutput,   // mount nsswitch.conf
 		debugRedirect, // touch hosts
 		mountOutput,   // mount hosts
-		debugEchos)
+		debugEchos,
+		dropPrivileges)
 
 	// Write the script
 	if err := os.WriteFile(wrapperPath, []byte(scriptContent), 0755); err != nil {
@@ -649,6 +729,9 @@ func (w *Wrapper) execWithCapabilities() error {
 		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("TRACEBIND_ARG_%d=%s", i, arg))
 	}
 	w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("TRACEBIND_ARG_COUNT=%d", len(w.config.CommandArgs)))
+	w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("HTTPSEAL_VERBOSE_MODE=%d", w.getVerboseMode()))
+
+	w.cmd.Env = w.appendCommandSpecificEnv(w.cmd.Env)
 
 	w.logger.Info("Starting process '%s' with isolated namespace...", w.config.Command)
 
@@ -672,4 +755,40 @@ func (w *Wrapper) cleanup() {
 			w.logger.Debug("Cleaned up temporary directory")
 		}
 	}
+}
+
+func (w *Wrapper) appendCommandSpecificEnv(env []string) []string {
+	base := filepath.Base(w.config.Command)
+	switch base {
+	case "tar", "gtar", "bsdtar":
+		if !envContains(env, "TAR_OPTIONS=") {
+			if _, present := os.LookupEnv("TAR_OPTIONS"); !present {
+				env = append(env, "TAR_OPTIONS=--no-same-owner --no-same-permissions")
+			}
+		}
+	}
+	return env
+}
+
+func envContains(env []string, prefix string) bool {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Wrapper) getVerboseMode() int {
+	mode := 0
+	if w.config.Verbose {
+		mode = 1
+	}
+	if w.config.ExtraVerbose {
+		mode = 2
+	}
+	if w.config.Quiet {
+		mode = 0
+	}
+	return mode
 }
