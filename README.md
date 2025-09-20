@@ -481,6 +481,20 @@ Other Options:
       --version                Show version
 ```
 
+## Tips & Troubleshooting
+
+### Tools that preserve file ownership
+
+HTTPSeal launches your workload inside a user namespace. Utilities such as `tar` may attempt to restore the original UID/GID from an archive, which fails when those IDs are not mapped inside the namespace. HTTPSeal automatically injects `TAR_OPTIONS=--no-same-owner --no-same-permissions` whenever it detects `tar`, `gtar`, or `bsdtar` so extraction proceeds without the `Cannot change ownership` error. If your workflow needs different flags, override the variable explicitly before invoking HTTPSeal:
+
+```bash
+TAR_OPTIONS=--same-owner httpseal -- tar xf backup.tgz
+```
+
+### Privilege dropping fallbacks
+
+To drop from namespace root back to the invoking user, HTTPSeal relies on `setpriv` (util-linux) or `runuser`. Some distributions or hardened kernels disallow this combination; in that case HTTPSeal keeps running as namespace root. The fallback warning is muted in normal mode to avoid noisy output—run with `-v` or `-vv` if you want to see detailed diagnostics about the privilege-drop attempt.
+
 ## Certificate Management
 
 HTTPSeal provides **automated certificate management** with persistent storage for optimal performance:

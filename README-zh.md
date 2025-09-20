@@ -266,6 +266,20 @@ Wireshark 集成:
       --version                显示版本
 ```
 
+## 使用技巧与故障排查
+
+### 需要保留文件所有权的工具
+
+HTTPSeal 会在用户命名空间中启动目标命令。`tar` 这类工具会尝试恢复归档内的 UID/GID，而这些 ID 在命名空间里通常没有映射，会触发 `Cannot change ownership` 错误。HTTPSeal 会在检测到 `tar`/`gtar`/`bsdtar` 时自动注入 `TAR_OPTIONS=--no-same-owner --no-same-permissions`，让解压流程顺利完成。若你确实需要其他参数，可在启动前显式设置该环境变量，例如：
+
+```bash
+TAR_OPTIONS=--same-owner httpseal -- tar xf backup.tgz
+```
+
+### 特权降级回退
+
+为了把命名空间内的 root 身份降回原始用户，HTTPSeal 会优先尝试 util-linux 的 `setpriv`（或备用的 `runuser`）。部分发行版或加固内核可能拒绝这一操作，此时 HTTPSeal 会继续以命名空间内的 root 身份运行。为了减少噪声，常规模式下这些回退提示会被静默；需要调试时，可加上 `-v`/`-vv` 查看详细日志。
+
 ## 证书管理
 
 HTTPSeal 提供**智能、自动化的证书管理**和持久存储以获得最佳性能：
@@ -393,4 +407,3 @@ make help         # 显示所有可用目标
 ## 免责声明
 
 HTTPSeal 仅用于合法开发、调试和授权安全测试目的。用户有责任确保使用此工具时遵守适用的法律法规。
-
