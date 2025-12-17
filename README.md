@@ -495,6 +495,18 @@ TAR_OPTIONS=--same-owner httpseal -- tar xf backup.tgz
 
 To drop from namespace root back to the invoking user, HTTPSeal relies on `setpriv` (util-linux) or `runuser`. Some distributions or hardened kernels disallow this combination; in that case HTTPSeal keeps running as namespace root. The fallback warning is muted in normal mode to avoid noisy output—run with `-v` or `-vv` if you want to see detailed diagnostics about the privilege-drop attempt.
 
+### `unshare: failed to execute newuidmap`
+
+Some distributions do not ship `newuidmap`/`newgidmap` by default (often provided by the `uidmap` package). When those helpers are missing, util-linux `unshare` can fail if asked to apply extra UID/GID mappings.
+
+HTTPSeal falls back to `unshare --map-root-user` only (no extra mappings) so the command still runs.
+
+**Recommended**: install the package that provides `newuidmap`/`newgidmap` (Debian/Ubuntu: `sudo apt install uidmap`). This enables the extra UID/GID mappings HTTPSeal uses to drop back to your original user *inside* the namespace.
+
+**Impact if you don’t install it**:
+- Your command may appear as UID/GID `0` *inside* the namespace (even though UID 0 is mapped to your host user via `--map-root-user`, so files created on the host are still owned by you).
+- Some tools change behavior when they detect “running as root” (config paths, safety checks, refusing to run, etc.).
+
 ## Certificate Management
 
 HTTPSeal provides **automated certificate management** with persistent storage for optimal performance:

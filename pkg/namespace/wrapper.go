@@ -545,7 +545,12 @@ func (w *Wrapper) createUserNamespaceScript() (string, error) {
 		echo "[DEBUG] Executing: $CMD $ARGS"`)
 	}
 
-	dropPrivileges := `HOST_UID="${HTTPSEAL_HOST_UID:-0}"
+	dropPrivileges := `if [ "${HTTPSEAL_CAN_DROP_PRIVS:-1}" != "1" ]; then
+	# Without extra UID/GID mappings, dropping to the invoking user may fail.
+	# Keep running as namespace root (still mapped to the host user via --map-root-user).
+	:
+else
+HOST_UID="${HTTPSEAL_HOST_UID:-0}"
 if [ "$HOST_UID" != "0" ]; then
 	HOST_GID="${HTTPSEAL_HOST_GID:-$HOST_UID}"
 	HOST_USER="${HTTPSEAL_HOST_USER:-}"
@@ -591,6 +596,7 @@ if [ "$HOST_UID" != "0" ]; then
 	elif [ "${HTTPSEAL_VERBOSE_MODE:-0}" -ne 0 ]; then
 		echo "[DEBUG] Unable to drop privileges inside namespace; command will run as root" >&2
 	fi
+fi
 fi`
 
 	scriptContent := fmt.Sprintf(`#!/bin/bash
@@ -599,60 +605,88 @@ set -e
 HOST_UID="${HTTPSEAL_HOST_UID:-0}"
 HOST_GID="${HTTPSEAL_HOST_GID:-$HOST_UID}"
 
-UNSHARE_ARGS=(--user --mount --map-root-user)
-if [ "$HOST_UID" != "0" ]; then
-	UNSHARE_ARGS+=("--map-users=${HOST_UID}:${HOST_UID}:1")
-fi
-if [ "$HOST_GID" != "0" ]; then
-	UNSHARE_ARGS+=("--map-groups=${HOST_GID}:${HOST_GID}:1")
+UNSHARE_ARGS_BASE=(--user --mount --map-root-user)
+UNSHARE_ARGS_EXTRA=()
+
+# Extra UID/GID mappings allow HTTPSeal to drop from namespace root back to the invoking user.
+# util-linux unshare may rely on newuidmap/newgidmap for these mappings; on systems without
+# the uidmap package, this can fail with "failed to execute newuidmap".
+if command -v newuidmap >/dev/null 2>&1 && command -v newgidmap >/dev/null 2>&1; then
+	if [ "$HOST_UID" != "0" ]; then
+		UNSHARE_ARGS_EXTRA+=("--map-users=${HOST_UID}:${HOST_UID}:1")
+	fi
+	if [ "$HOST_GID" != "0" ]; then
+		UNSHARE_ARGS_EXTRA+=("--map-groups=${HOST_GID}:${HOST_GID}:1")
+	fi
 fi
 
-# Create user and mount namespaces with UID/GID mapping
-unshare "${UNSHARE_ARGS[@]}" bash -c '
-	# Set mount propagation to private
-	mount --make-rprivate / %s || true
-	
-	# Set up bind mounts (we are now root in the namespace)
-	if [ -f "$HTTPSEAL_TEMP_DIR/resolv.conf" ]; then
-		[ ! -f /etc/resolv.conf ] && touch /etc/resolv.conf %s
-		mount --bind "$HTTPSEAL_TEMP_DIR/resolv.conf" /etc/resolv.conf %s
-	fi
-	
-	if [ -f "$HTTPSEAL_TEMP_DIR/ca-certificates.crt" ]; then
-		mkdir -p /etc/ssl/certs %s
-		[ ! -f /etc/ssl/certs/ca-certificates.crt ] && touch /etc/ssl/certs/ca-certificates.crt %s
-		mount --bind "$HTTPSEAL_TEMP_DIR/ca-certificates.crt" /etc/ssl/certs/ca-certificates.crt %s
-	fi
-	
-	if [ -f "$HTTPSEAL_TEMP_DIR/nsswitch.conf" ]; then
-		[ ! -f /etc/nsswitch.conf ] && touch /etc/nsswitch.conf %s
-		mount --bind "$HTTPSEAL_TEMP_DIR/nsswitch.conf" /etc/nsswitch.conf %s
-	fi
-	
-	if [ -f "$HTTPSEAL_TEMP_DIR/hosts" ]; then
-		[ ! -f /etc/hosts ] && touch /etc/hosts %s
-		mount --bind "$HTTPSEAL_TEMP_DIR/hosts" /etc/hosts %s
-	fi
-	%s
-	
-	# Reconstruct original command and arguments with proper quoting
-	CMD="$HTTPSEAL_ORIGINAL_CMD"
-	declare -a CMDARGS
-	i=0
-	while [ $i -lt $HTTPSEAL_ARG_COUNT ]; do
-		var_name="HTTPSEAL_ARG_$i"
-		arg="${!var_name}"
-		if [ -n "$arg" ]; then
-			CMDARGS[$i]="$arg"
+run_in_ns() {
+	local can_drop="$1"
+	shift
+	HTTPSEAL_CAN_DROP_PRIVS="$can_drop" unshare "$@" bash -c '
+		# Set mount propagation to private
+		mount --make-rprivate / %s || true
+		
+		# Set up bind mounts (we are now root in the namespace)
+		if [ -f "$HTTPSEAL_TEMP_DIR/resolv.conf" ]; then
+			[ ! -f /etc/resolv.conf ] && touch /etc/resolv.conf %s
+			mount --bind "$HTTPSEAL_TEMP_DIR/resolv.conf" /etc/resolv.conf %s
 		fi
-		i=$((i + 1))
-	done
+		
+		if [ -f "$HTTPSEAL_TEMP_DIR/ca-certificates.crt" ]; then
+			mkdir -p /etc/ssl/certs %s
+			[ ! -f /etc/ssl/certs/ca-certificates.crt ] && touch /etc/ssl/certs/ca-certificates.crt %s
+			mount --bind "$HTTPSEAL_TEMP_DIR/ca-certificates.crt" /etc/ssl/certs/ca-certificates.crt %s
+		fi
+		
+		if [ -f "$HTTPSEAL_TEMP_DIR/nsswitch.conf" ]; then
+			[ ! -f /etc/nsswitch.conf ] && touch /etc/nsswitch.conf %s
+			mount --bind "$HTTPSEAL_TEMP_DIR/nsswitch.conf" /etc/nsswitch.conf %s
+		fi
+		
+		if [ -f "$HTTPSEAL_TEMP_DIR/hosts" ]; then
+			[ ! -f /etc/hosts ] && touch /etc/hosts %s
+			mount --bind "$HTTPSEAL_TEMP_DIR/hosts" /etc/hosts %s
+		fi
+		%s
+		
+		# Reconstruct original command and arguments with proper quoting
+		CMD="$HTTPSEAL_ORIGINAL_CMD"
+		declare -a CMDARGS
+		i=0
+		while [ $i -lt $HTTPSEAL_ARG_COUNT ]; do
+			var_name="HTTPSEAL_ARG_$i"
+			arg="${!var_name}"
+			if [ -n "$arg" ]; then
+				CMDARGS[$i]="$arg"
+			fi
+			i=$((i + 1))
+		done
 
-	# Execute the original command with proper argument preservation
-	%s
+		# Execute the original command with proper argument preservation
+		%s
 
-	exec "$CMD" "${CMDARGS[@]}"
-'`,
+		exec "$CMD" "${CMDARGS[@]}"
+	'
+}
+
+# Prefer extra mappings when possible; fall back to base mapping when they are unsupported
+# or when newuidmap/newgidmap are missing.
+if [ "${#UNSHARE_ARGS_EXTRA[@]}" -gt 0 ]; then
+	set +e
+	run_in_ns 1 "${UNSHARE_ARGS_BASE[@]}" "${UNSHARE_ARGS_EXTRA[@]}"
+	STATUS=$?
+	set -e
+	if [ "$STATUS" -eq 0 ]; then
+		exit 0
+	fi
+	if [ "${HTTPSEAL_VERBOSE_MODE:-0}" -ne 0 ]; then
+		echo "[DEBUG] unshare with extra UID/GID mappings failed (status $STATUS); retrying without --map-users/--map-groups" >&2
+	fi
+fi
+
+run_in_ns 0 "${UNSHARE_ARGS_BASE[@]}"
+`,
 		mountOutput,   // mount --make-rprivate
 		debugRedirect, // touch resolv.conf
 		mountOutput,   // mount resolv.conf

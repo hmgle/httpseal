@@ -280,6 +280,22 @@ TAR_OPTIONS=--same-owner httpseal -- tar xf backup.tgz
 
 为了把命名空间内的 root 身份降回原始用户，HTTPSeal 会优先尝试 util-linux 的 `setpriv`（或备用的 `runuser`）。部分发行版或加固内核可能拒绝这一操作，此时 HTTPSeal 会继续以命名空间内的 root 身份运行。为了减少噪声，常规模式下这些回退提示会被静默；需要调试时，可加上 `-v`/`-vv` 查看详细日志。
 
+### `unshare: failed to execute newuidmap`
+
+在某些发行版上，`newuidmap`/`newgidmap` 并不会默认安装（通常由 `uidmap` 包提供）。当缺少这些 helper 时，如果 util-linux 的 `unshare` 被要求应用额外的 UID/GID 映射，就可能报：
+
+```
+unshare: failed to execute newuidmap: No such file or directory
+```
+
+HTTPSeal 已改为自动回退到仅使用 `unshare --map-root-user`（不启用额外映射），让命令仍然可以运行。回退模式下，进程在命名空间**内部**可能显示为 UID/GID `0`；如需在命名空间内也保持为原始用户，请安装 `uidmap`（Debian/Ubuntu 示例：`sudo apt install uidmap`）。
+
+**建议安装**：提供 `newuidmap`/`newgidmap` 的包（Debian/Ubuntu：`sudo apt install uidmap`）。安装后 HTTPSeal 才能启用额外 UID/GID 映射，从而把命名空间内的 root 身份降回原始用户。
+
+**不安装的影响**：
+- 命令在命名空间**内部**可能显示为 UID/GID `0`（但由于 `--map-root-user` 的映射关系，在宿主机上创建的文件仍会显示为你的用户所有）。
+- 部分工具在检测到“以 root 运行”时会改变行为（配置目录、安全检查、拒绝运行等）。
+
 ## 证书管理
 
 HTTPSeal 提供**智能、自动化的证书管理**和持久存储以获得最佳性能：
