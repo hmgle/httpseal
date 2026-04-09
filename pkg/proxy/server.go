@@ -123,7 +123,6 @@ func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) *ht
 	}
 }
 
-
 // Start starts the HTTPS proxy server
 func (s *Server) Start() error {
 	// Listen on all interfaces to catch redirected traffic from all 127.x.x.x addresses
@@ -231,12 +230,11 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		connectionTimeout = 30 * time.Second // fallback default
 	}
 
+	reader := bufio.NewReader(conn)
+
 	for {
 		// Set read deadline to detect idle connections
 		conn.SetReadDeadline(time.Now().Add(connectionTimeout))
-
-		// Create a buffered reader for parsing HTTP requests
-		reader := bufio.NewReader(conn)
 
 		// Parse the HTTP request
 		req, err := http.ReadRequest(reader)
@@ -322,14 +320,12 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		}
 
 		// HTTP connection persistence logic
-		if req.Close || resp.Close || (req.ProtoAtLeast(1, 1) && req.Header.Get("Connection") == "close") || (req.ProtoAtLeast(1, 0) && req.Header.Get("Connection") != "keep-alive") {
+		if req.Close || resp.Close {
 			s.logger.Debug("Closing connection as requested by headers.")
 			break
 		}
 	}
 }
-
-
 
 // createTLSConfig creates TLS configuration with dynamic certificate for the domain
 func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
@@ -478,20 +474,19 @@ func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodyBytes []byt
 	resp.Proto = "HTTP/1.1"
 	resp.ProtoMajor = 1
 	resp.ProtoMinor = 1
-	
+
 	// Set correct Content-Length based on actual captured body
 	resp.ContentLength = int64(len(bodyBytes))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-	
+
 	// Remove Transfer-Encoding since we have complete body and explicit Content-Length
 	resp.Header.Del("Transfer-Encoding")
-	
+
 	// Remove HTTP/2 specific headers that might cause issues
 	resp.Header.Del("Alt-Svc")
-	
+
 	// Replace response body with captured content
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	
+
 	s.logger.Debug("Normalized response to HTTP/1.1 with Content-Length: %d", len(bodyBytes))
 }
-
