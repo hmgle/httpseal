@@ -30,15 +30,19 @@ type TrafficRecord struct {
 
 // Server implements an HTTP mirror server for Wireshark analysis
 type Server struct {
-	port      int
-	listener  net.Listener
-	logger    logger.Logger
-	wg        sync.WaitGroup
-	stopCh    chan struct{}
-	connID    uint64
-	exchanges chan *TrafficRecord
-	responses map[uint64]*TrafficRecord // Store responses by ID
-	respMutex sync.RWMutex
+	port        int
+	listener    net.Listener
+	logger      logger.Logger
+	wg          sync.WaitGroup
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	connID      uint64
+	exchanges   chan *TrafficRecord
+	processDone chan struct{}
+	responses   map[uint64]*TrafficRecord // Store responses by ID
+	respMutex   sync.RWMutex
+	stateMu     sync.RWMutex
+	stopped     bool
 }
 
 // NewServer creates a new HTTP mirror server
@@ -63,6 +67,7 @@ func (s *Server) Start() error {
 	s.logger.Info("HTTP Mirror Server started on 127.0.0.1:%d", s.port)
 	s.logger.Info("Configure Wireshark to capture on interface 'lo' with filter 'tcp port %d'", s.port)
 
+	s.processDone = make(chan struct{})
 	go s.acceptLoop()
 	go s.processExchanges()
 	return nil
@@ -70,12 +75,20 @@ func (s *Server) Start() error {
 
 // Stop stops the HTTP mirror server
 func (s *Server) Stop() error {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		s.stateMu.Lock()
+		s.stopped = true
+		close(s.stopCh)
+		s.stateMu.Unlock()
+	})
 	if s.listener != nil {
 		s.listener.Close()
 	}
-	close(s.exchanges)
+	if s.processDone != nil {
+		<-s.processDone
+	}
 	s.wg.Wait()
+	s.clearResponses()
 	return nil
 }
 
@@ -93,6 +106,12 @@ func (s *Server) MirrorTraffic(originalHost, method, url, requestBody, responseB
 		Headers:      headers,
 	}
 
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if s.stopped {
+		return
+	}
+
 	// Store the response for later retrieval
 	s.respMutex.Lock()
 	s.responses[record.ID] = record
@@ -100,8 +119,8 @@ func (s *Server) MirrorTraffic(originalHost, method, url, requestBody, responseB
 
 	select {
 	case s.exchanges <- record:
-	case <-s.stopCh:
 	default:
+		s.deleteResponse(record.ID)
 		s.logger.Warn("Mirror exchange buffer full, dropping record")
 	}
 }
@@ -227,9 +246,16 @@ func (s *Server) sendMirroredResponse(conn net.Conn, record *TrafficRecord) {
 
 // processExchanges processes mirrored traffic records
 func (s *Server) processExchanges() {
-	for record := range s.exchanges {
-		if err := s.simulateHTTPExchange(record); err != nil {
-			s.logger.Error("Failed to simulate HTTP exchange: %v", err)
+	defer close(s.processDone)
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case record := <-s.exchanges:
+			if err := s.simulateHTTPExchange(record); err != nil {
+				s.logger.Error("Failed to simulate HTTP exchange: %v", err)
+			}
 		}
 	}
 }
@@ -293,4 +319,16 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 // GetPort returns the port the mirror server is listening on
 func (s *Server) GetPort() int {
 	return s.port
+}
+
+func (s *Server) deleteResponse(id uint64) {
+	s.respMutex.Lock()
+	delete(s.responses, id)
+	s.respMutex.Unlock()
+}
+
+func (s *Server) clearResponses() {
+	s.respMutex.Lock()
+	clear(s.responses)
+	s.respMutex.Unlock()
 }
