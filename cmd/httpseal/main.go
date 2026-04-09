@@ -25,11 +25,11 @@ var (
 	// Network settings
 	verbose      bool
 	extraVerbose bool
-	dnsIP     string
-	dnsPort   int
-	proxyPort int
-	caDir     string
-	keepCA    bool
+	dnsIP        string
+	dnsPort      int
+	proxyPort    int
+	caDir        string
+	keepCA       bool
 
 	// HTTP traffic interception
 	enableHTTP bool
@@ -54,6 +54,7 @@ var (
 	maxBodySize         int
 	filterDomains       []string
 	excludeContentTypes []string
+	decompressResponse  bool
 
 	// Wireshark integration
 	enableMirror bool
@@ -133,7 +134,7 @@ Examples:
 
 	// Network settings
 	rootCmd.Flags().CountP("verbose", "v", "Enable verbose output (-v for verbose, -vv for extra-verbose)")
-	
+
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
@@ -163,6 +164,7 @@ Examples:
 	rootCmd.Flags().IntVar(&maxBodySize, "max-body-size", 0, "Maximum response body size to log (bytes, 0=unlimited)")
 	rootCmd.Flags().StringSliceVar(&filterDomains, "filter-domain", []string{}, "Only log traffic for these domains (can be repeated)")
 	rootCmd.Flags().StringSliceVar(&excludeContentTypes, "exclude-content-type", []string{}, "Exclude these content types from logging")
+	rootCmd.Flags().BoolVar(&decompressResponse, "decompress-response", true, "Decompress compressed response bodies for logging")
 
 	// Wireshark integration
 	rootCmd.Flags().BoolVar(&enableMirror, "enable-mirror", false, "Enable HTTP mirror server for Wireshark analysis")
@@ -183,7 +185,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	extraVerbose = verboseCount > 1
 
 	// Load configuration file
-	if err := loadConfigFile(); err != nil {
+	if err := loadConfigFile(cmd); err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
@@ -224,11 +226,11 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		// Network settings
 		Verbose:      verbose,
 		ExtraVerbose: extraVerbose,
-		DNSIP:     dnsIP,
-		DNSPort:   dnsPort,
-		ProxyPort: proxyPort,
-		CADir:     caDir, // Will be updated below if temporary
-		KeepCA:    keepCA,
+		DNSIP:        dnsIP,
+		DNSPort:      dnsPort,
+		ProxyPort:    proxyPort,
+		CADir:        caDir, // Will be updated below if temporary
+		KeepCA:       keepCA,
 
 		// HTTP traffic interception
 		EnableHTTP: enableHTTP,
@@ -257,7 +259,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		MaxBodySize:         maxBodySize,
 		FilterDomains:       filterDomains,
 		ExcludeContentTypes: excludeContentTypes,
-		DecompressResponse:  true, // Enable response decompression by default
+		DecompressResponse:  decompressResponse,
 
 		// Wireshark integration
 		EnableMirror: enableMirror,
@@ -276,7 +278,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	if cfg.CADir == "" {
 		// Use XDG-compliant default CA directory for certificate persistence
 		cfg.CADir = config.GetDefaultCADir()
-		
+
 		// Create directory if it doesn't exist
 		if err := os.MkdirAll(cfg.CADir, 0755); err != nil {
 			// Fallback to temporary directory if XDG path creation fails
@@ -426,7 +428,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 }
 
 // loadConfigFile loads configuration from file and merges with CLI flags
-func loadConfigFile() error {
+func loadConfigFile(cmd *cobra.Command) error {
 	// Determine config file path
 	configPath := configFile
 	if configPath == "" {
@@ -436,12 +438,7 @@ func loadConfigFile() error {
 	// Load configuration file
 	fileConfig, err := config.LoadConfigFile(configPath)
 	if err != nil {
-		// Only return error if a specific config file was requested but failed to load
-		if configFile != "" {
-			return fmt.Errorf("failed to load config file %s: %w", configPath, err)
-		}
-		// If using default path and file doesn't exist, that's OK
-		return nil
+		return fmt.Errorf("failed to load config file %s: %w", configPath, err)
 	}
 
 	// Create temporary config to merge file settings
@@ -470,12 +467,15 @@ func loadConfigFile() error {
 		MaxBodySize:         maxBodySize,
 		FilterDomains:       filterDomains,
 		ExcludeContentTypes: excludeContentTypes,
+		DecompressResponse:  decompressResponse,
 		EnableMirror:        enableMirror,
 		MirrorPort:          mirrorPort,
 	}
 
-	// Merge file config with CLI config (CLI takes precedence)
-	tempConfig.MergeWithFileConfig(fileConfig)
+	// Merge file config with CLI config (explicitly changed CLI flags take precedence)
+	tempConfig.MergeWithFileConfig(fileConfig, func(name string) bool {
+		return flagChanged(cmd, name)
+	})
 
 	// Update global variables with merged values
 	verbose = tempConfig.Verbose
@@ -501,10 +501,19 @@ func loadConfigFile() error {
 	maxBodySize = tempConfig.MaxBodySize
 	filterDomains = tempConfig.FilterDomains
 	excludeContentTypes = tempConfig.ExcludeContentTypes
+	decompressResponse = tempConfig.DecompressResponse
 	enableMirror = tempConfig.EnableMirror
 	mirrorPort = tempConfig.MirrorPort
 
 	return nil
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	if cmd == nil {
+		return false
+	}
+	flag := cmd.Flags().Lookup(name)
+	return flag != nil && flag.Changed
 }
 
 // validateFlags validates command line flags

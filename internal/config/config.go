@@ -20,10 +20,10 @@ const (
 type LogLevel string
 
 const (
-	LogLevelNone      LogLevel = "none"      // No traffic logging
-	LogLevelMinimal   LogLevel = "minimal"   // Only basic request/response info
-	LogLevelNormal    LogLevel = "normal"    // Headers and summary
-	LogLevelVerbose   LogLevel = "verbose"   // Everything including text bodies
+	LogLevelNone         LogLevel = "none"          // No traffic logging
+	LogLevelMinimal      LogLevel = "minimal"       // Only basic request/response info
+	LogLevelNormal       LogLevel = "normal"        // Headers and summary
+	LogLevelVerbose      LogLevel = "verbose"       // Everything including text bodies
 	LogLevelExtraVerbose LogLevel = "extra-verbose" // Everything including all bodies (text and binary)
 )
 
@@ -32,11 +32,11 @@ type Config struct {
 	// Network settings
 	Verbose      bool
 	ExtraVerbose bool // Extra verbose mode (-vv)
-	DNSIP     string
-	DNSPort   int
-	ProxyPort int
-	CADir     string
-	KeepCA    bool // Keep CA directory after exit
+	DNSIP        string
+	DNSPort      int
+	ProxyPort    int
+	CADir        string
+	KeepCA       bool // Keep CA directory after exit
 
 	// HTTP traffic interception
 	EnableHTTP bool // Enable HTTP traffic interception on port 80
@@ -77,11 +77,11 @@ type FileConfig struct {
 	// Network settings
 	Verbose      *bool   `json:"verbose,omitempty"`
 	ExtraVerbose *bool   `json:"extra_verbose,omitempty"`
-	DNSIP     *string `json:"dns_ip,omitempty"`
-	DNSPort   *int    `json:"dns_port,omitempty"`
-	ProxyPort *int    `json:"proxy_port,omitempty"`
-	CADir     *string `json:"ca_dir,omitempty"`
-	KeepCA    *bool   `json:"keep_ca,omitempty"`
+	DNSIP        *string `json:"dns_ip,omitempty"`
+	DNSPort      *int    `json:"dns_port,omitempty"`
+	ProxyPort    *int    `json:"proxy_port,omitempty"`
+	CADir        *string `json:"ca_dir,omitempty"`
+	KeepCA       *bool   `json:"keep_ca,omitempty"`
 
 	// HTTP traffic interception
 	EnableHTTP *bool `json:"enable_http,omitempty"`
@@ -97,16 +97,16 @@ type FileConfig struct {
 	SOCKS5Password *string `json:"socks5_password,omitempty"`
 
 	// Traffic logging and output
-	OutputFile          *string    `json:"output_file,omitempty"`
-	OutputFormat        *string    `json:"output_format,omitempty"`
-	LogLevel            *string    `json:"log_level,omitempty"`
-	FileLogLevel        *string    `json:"file_log_level,omitempty"`
-	LogFile             *string    `json:"log_file,omitempty"`
-	Quiet               *bool      `json:"quiet,omitempty"`
-	MaxBodySize         *int       `json:"max_body_size,omitempty"`
-	FilterDomains       *[]string  `json:"filter_domains,omitempty"`
-	ExcludeContentTypes *[]string  `json:"exclude_content_types,omitempty"`
-	DecompressResponse  *bool      `json:"decompress_response,omitempty"`
+	OutputFile          *string   `json:"output_file,omitempty"`
+	OutputFormat        *string   `json:"output_format,omitempty"`
+	LogLevel            *string   `json:"log_level,omitempty"`
+	FileLogLevel        *string   `json:"file_log_level,omitempty"`
+	LogFile             *string   `json:"log_file,omitempty"`
+	Quiet               *bool     `json:"quiet,omitempty"`
+	MaxBodySize         *int      `json:"max_body_size,omitempty"`
+	FilterDomains       *[]string `json:"filter_domains,omitempty"`
+	ExcludeContentTypes *[]string `json:"exclude_content_types,omitempty"`
+	DecompressResponse  *bool     `json:"decompress_response,omitempty"`
 
 	// Wireshark integration
 	EnableMirror *bool `json:"enable_mirror,omitempty"`
@@ -119,12 +119,12 @@ func GetConfigDir() string {
 	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
 		return filepath.Join(xdgConfig, "httpseal")
 	}
-	
+
 	// Fallback to ~/.config/httpseal
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(homeDir, ".config", "httpseal")
 	}
-	
+
 	// Final fallback to current directory
 	return ".httpseal"
 }
@@ -157,96 +157,86 @@ func LoadConfigFile(path string) (*FileConfig, error) {
 	return &config, nil
 }
 
-// MergeWithFileConfig merges file configuration with CLI configuration
-// CLI parameters take precedence over file configuration
-func (c *Config) MergeWithFileConfig(fileConfig *FileConfig) {
+// MergeWithFileConfig merges file configuration into Config.
+// Explicitly changed CLI flags take precedence over file values.
+func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(string) bool) {
+	if fileConfig == nil {
+		return
+	}
+	if isFlagChanged == nil {
+		isFlagChanged = func(string) bool { return false }
+	}
+
+	applyBool := func(flagName string, src *bool, dst *bool) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = *src
+		}
+	}
+	applyInt := func(flagName string, src *int, dst *int) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = *src
+		}
+	}
+	applyString := func(flagName string, src *string, dst *string) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = *src
+		}
+	}
+	applyStringSlice := func(flagName string, src *[]string, dst *[]string) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = append([]string(nil), (*src)...)
+		}
+	}
+
 	// Network settings
-	if fileConfig.Verbose != nil && !c.Verbose {
-		c.Verbose = *fileConfig.Verbose
-	}
-	if fileConfig.ExtraVerbose != nil && !c.ExtraVerbose {
-		c.ExtraVerbose = *fileConfig.ExtraVerbose
-	}
-	if fileConfig.DNSIP != nil && c.DNSIP == "127.0.53.1" {
-		c.DNSIP = *fileConfig.DNSIP
-	}
-	if fileConfig.DNSPort != nil && c.DNSPort == 53 {
-		c.DNSPort = *fileConfig.DNSPort
-	}
-	if fileConfig.ProxyPort != nil && c.ProxyPort == 443 {
-		c.ProxyPort = *fileConfig.ProxyPort
-	}
-	if fileConfig.CADir != nil && c.CADir == "" {
-		c.CADir = *fileConfig.CADir
-	}
-	if fileConfig.KeepCA != nil && !c.KeepCA {
-		c.KeepCA = *fileConfig.KeepCA
-	}
+	applyBool("verbose", fileConfig.Verbose, &c.Verbose)
+	applyBool("verbose", fileConfig.ExtraVerbose, &c.ExtraVerbose)
+	applyString("dns-ip", fileConfig.DNSIP, &c.DNSIP)
+	applyInt("dns-port", fileConfig.DNSPort, &c.DNSPort)
+	applyInt("proxy-port", fileConfig.ProxyPort, &c.ProxyPort)
+	applyString("ca-dir", fileConfig.CADir, &c.CADir)
+	applyBool("keep-ca", fileConfig.KeepCA, &c.KeepCA)
 
 	// HTTP traffic interception
-	if fileConfig.EnableHTTP != nil && !c.EnableHTTP {
-		c.EnableHTTP = *fileConfig.EnableHTTP
-	}
-	if fileConfig.HTTPPort != nil && c.HTTPPort == 80 {
-		c.HTTPPort = *fileConfig.HTTPPort
-	}
+	applyBool("enable-http", fileConfig.EnableHTTP, &c.EnableHTTP)
+	applyInt("http-port", fileConfig.HTTPPort, &c.HTTPPort)
 
 	// Connection settings
-	if fileConfig.ConnectionTimeout != nil && c.ConnectionTimeout == 30 {
-		c.ConnectionTimeout = *fileConfig.ConnectionTimeout
-	}
+	applyInt("connection-timeout", fileConfig.ConnectionTimeout, &c.ConnectionTimeout)
 
 	// SOCKS5 proxy settings
-	if fileConfig.SOCKS5Enabled != nil && !c.SOCKS5Enabled {
-		c.SOCKS5Enabled = *fileConfig.SOCKS5Enabled
-	}
-	if fileConfig.SOCKS5Address != nil && c.SOCKS5Address == "127.0.0.1:1080" {
-		c.SOCKS5Address = *fileConfig.SOCKS5Address
-	}
-	if fileConfig.SOCKS5Username != nil && c.SOCKS5Username == "" {
-		c.SOCKS5Username = *fileConfig.SOCKS5Username
-	}
-	if fileConfig.SOCKS5Password != nil && c.SOCKS5Password == "" {
-		c.SOCKS5Password = *fileConfig.SOCKS5Password
-	}
+	applyBool("socks5", fileConfig.SOCKS5Enabled, &c.SOCKS5Enabled)
+	applyString("socks5-addr", fileConfig.SOCKS5Address, &c.SOCKS5Address)
+	applyString("socks5-user", fileConfig.SOCKS5Username, &c.SOCKS5Username)
+	applyString("socks5-pass", fileConfig.SOCKS5Password, &c.SOCKS5Password)
 
 	// Traffic logging and output
-	if fileConfig.OutputFile != nil && c.OutputFile == "" {
-		c.OutputFile = *fileConfig.OutputFile
-	}
-	if fileConfig.OutputFormat != nil && c.OutputFormat == FormatText {
+	applyString("output", fileConfig.OutputFile, &c.OutputFile)
+	if fileConfig.OutputFormat != nil && !isFlagChanged("format") {
 		c.OutputFormat = OutputFormat(*fileConfig.OutputFormat)
 	}
-	if fileConfig.LogLevel != nil && c.LogLevel == LogLevelNormal {
+	if fileConfig.LogLevel != nil && !isFlagChanged("log-level") {
 		c.LogLevel = LogLevel(*fileConfig.LogLevel)
 	}
-	if fileConfig.FileLogLevel != nil && c.FileLogLevel == LogLevelNone {
+	if fileConfig.FileLogLevel != nil && !isFlagChanged("file-log-level") {
 		c.FileLogLevel = LogLevel(*fileConfig.FileLogLevel)
 	}
-	if fileConfig.LogFile != nil && c.LogFile == "" {
-		c.LogFile = *fileConfig.LogFile
-	}
-	if fileConfig.Quiet != nil && !c.Quiet {
-		c.Quiet = *fileConfig.Quiet
-	}
-	if fileConfig.MaxBodySize != nil && c.MaxBodySize == 0 {
-		c.MaxBodySize = *fileConfig.MaxBodySize
-	}
-	if fileConfig.FilterDomains != nil && len(c.FilterDomains) == 0 {
-		c.FilterDomains = *fileConfig.FilterDomains
-	}
-	if fileConfig.ExcludeContentTypes != nil && len(c.ExcludeContentTypes) == 0 {
-		c.ExcludeContentTypes = *fileConfig.ExcludeContentTypes
-	}
-	if fileConfig.DecompressResponse != nil && c.DecompressResponse {
-		c.DecompressResponse = *fileConfig.DecompressResponse
-	}
+	applyString("log-file", fileConfig.LogFile, &c.LogFile)
+	applyBool("quiet", fileConfig.Quiet, &c.Quiet)
+	applyInt("max-body-size", fileConfig.MaxBodySize, &c.MaxBodySize)
+	applyStringSlice("filter-domain", fileConfig.FilterDomains, &c.FilterDomains)
+	applyStringSlice(
+		"exclude-content-type",
+		fileConfig.ExcludeContentTypes,
+		&c.ExcludeContentTypes,
+	)
+	applyBool(
+		"decompress-response",
+		fileConfig.DecompressResponse,
+		&c.DecompressResponse,
+	)
 
 	// Wireshark integration
-	if fileConfig.EnableMirror != nil && !c.EnableMirror {
-		c.EnableMirror = *fileConfig.EnableMirror
-	}
-	if fileConfig.MirrorPort != nil && c.MirrorPort == 8080 {
-		c.MirrorPort = *fileConfig.MirrorPort
-	}
+	applyBool("enable-mirror", fileConfig.EnableMirror, &c.EnableMirror)
+	applyInt("mirror-port", fileConfig.MirrorPort, &c.MirrorPort)
 }
