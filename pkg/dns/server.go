@@ -41,11 +41,11 @@ func NewLoopbackGen() *LoopbackGen {
 func (g *LoopbackGen) GetNextIP() net.IP {
 	// Use atomic increment to get next offset safely
 	offset := g.counter.Add(1)
-	
+
 	// Use modulo to cycle through the range safely, avoiding overflow issues
 	// offset-1 ensures we start from startIP (not startIP+1) on first call
 	ipVal := g.startIP + uint32((offset-1)%uint64(g.rangeSize))
-	
+
 	// Create IP directly from uint32 to avoid extra allocations
 	ipBytes := [4]byte{}
 	binary.BigEndian.PutUint32(ipBytes[:], ipVal)
@@ -54,15 +54,15 @@ func (g *LoopbackGen) GetNextIP() net.IP {
 
 // Server implements a simple DNS server for hijacking domain lookups
 type Server struct {
-	ip            string
-	port          int
-	udpServer     *dns.Server
-	tcpServer     *dns.Server
-	logger        logger.Logger
-	ipDomainMap   sync.Map   // Maps assigned IP addresses back to domains
-	domainIPMap   sync.Map   // Maps domains to their assigned IP addresses
-	ipGen         *LoopbackGen // IP generator for efficient allocation
-	upstreamDNS   string     // Upstream DNS server for non-hijacked queries
+	ip          string
+	port        int
+	udpServer   *dns.Server
+	tcpServer   *dns.Server
+	logger      logger.Logger
+	ipDomainMap sync.Map     // Maps assigned IP addresses back to domains
+	domainIPMap sync.Map     // Maps domains to their assigned IP addresses
+	ipGen       *LoopbackGen // IP generator for efficient allocation
+	upstreamDNS string       // Upstream DNS server for non-hijacked queries
 }
 
 // NewServer creates a new DNS server
@@ -81,17 +81,36 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.ip, s.port)
 	handler := dns.HandlerFunc(s.handleRequest)
 
-	s.udpServer = &dns.Server{Addr: addr, Net: "udp", Handler: handler}
-	s.tcpServer = &dns.Server{Addr: addr, Net: "tcp", Handler: handler}
+	udpConn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind DNS UDP listener on %s: %w", addr, err)
+	}
+
+	tcpListener, err := net.Listen("tcp", addr)
+	if err != nil {
+		udpConn.Close()
+		return fmt.Errorf("failed to bind DNS TCP listener on %s: %w", addr, err)
+	}
+
+	s.udpServer = &dns.Server{
+		PacketConn: udpConn,
+		Net:        "udp",
+		Handler:    handler,
+	}
+	s.tcpServer = &dns.Server{
+		Listener: tcpListener,
+		Net:      "tcp",
+		Handler:  handler,
+	}
 
 	go func() {
-		if err := s.udpServer.ListenAndServe(); err != nil {
+		if err := s.udpServer.ActivateAndServe(); err != nil {
 			s.logger.Error("DNS UDP server failed: %v", err)
 		}
 	}()
 
 	go func() {
-		if err := s.tcpServer.ListenAndServe(); err != nil {
+		if err := s.tcpServer.ActivateAndServe(); err != nil {
 			s.logger.Error("DNS TCP server failed: %v", err)
 		}
 	}()
@@ -171,14 +190,14 @@ func (s *Server) assignIP(domain string) net.IP {
 	// Use the IP generator to get the next IP
 	currentIP := s.ipGen.GetNextIP()
 	ipStr := currentIP.String()
-	
+
 	// Use LoadOrStore to handle race conditions elegantly
 	if existingIP, loaded := s.domainIPMap.LoadOrStore(domain, ipStr); loaded {
 		// Another goroutine already assigned an IP to this domain
 		s.logger.Debug("Domain %s already mapped to %s by another goroutine", domain, existingIP.(string))
 		return net.ParseIP(existingIP.(string))
 	}
-	
+
 	// We successfully stored the new mapping, also store reverse mapping
 	s.ipDomainMap.Store(ipStr, domain)
 	s.logger.Info("Mapped domain %s to local IP %s", domain, ipStr)
