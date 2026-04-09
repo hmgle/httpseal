@@ -103,7 +103,7 @@ func (w *Wrapper) prepareIsolatedFiles() error {
 		return fmt.Errorf("failed to prepare nsswitch.conf: %w", err)
 	}
 
-	// 4. Prepare empty hosts file to prevent local overrides
+	// 4. Prepare minimal hosts file to keep localhost working
 	if err := w.prepareEmptyHosts(); err != nil {
 		return fmt.Errorf("failed to prepare empty hosts file: %w", err)
 	}
@@ -205,22 +205,12 @@ func (w *Wrapper) prepareNSSwitch() error {
 	return nil
 }
 
-// prepareEmptyHosts creates a hosts file that pre-maps common domains to localhost
+// prepareEmptyHosts creates a minimal hosts file with only localhost entries
 func (w *Wrapper) prepareEmptyHosts() error {
-	// Create a hosts file with localhost entries and some common test domains
-	// This should help bypass nscd for common domains
 	hostsContent := `127.0.0.1	localhost
 ::1		localhost ip6-localhost ip6-loopback
 ff02::1		ip6-allnodes
 ff02::2		ip6-allrouters
-
-# HTTPSeal: Pre-map common domains to localhost to bypass nscd cache
-127.0.0.2	httpbin.org
-127.0.0.3	api.github.com
-127.0.0.4	google.com
-127.0.0.5	baidu.com
-127.0.0.6	example.com
-127.0.0.7	httpbin.org www.httpbin.org
 `
 
 	// Write the hosts file
