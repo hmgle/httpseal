@@ -278,10 +278,13 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			// Optionally, write a 502 Bad Gateway response to the client
 			return
 		}
-		defer resp.Body.Close()
 
 		// Capture response and create traffic record
 		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration, requestBody)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			s.logger.Error("Failed to close upstream response body: %v", closeErr)
+			return
+		}
 		if err != nil {
 			s.logger.Error("Failed to capture response: %v", err)
 			return
@@ -312,6 +315,10 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		if err := resp.Write(conn); err != nil {
 			s.logger.Error("Failed to write response to client: %v", err)
 			break // Break connection on write error
+		}
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body after write: %v", err)
+			break
 		}
 
 		// HTTP connection persistence logic
@@ -487,5 +494,4 @@ func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodyBytes []byt
 	
 	s.logger.Debug("Normalized response to HTTP/1.1 with Content-Length: %d", len(bodyBytes))
 }
-
 
