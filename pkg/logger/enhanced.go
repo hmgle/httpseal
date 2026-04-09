@@ -72,7 +72,14 @@ func NewEnhanced(cfg *config.Config) (TrafficLogger, error) {
 // setupFileOutput initializes file output based on format
 func (l *EnhancedLogger) setupFileOutput() error {
 	var err error
-	l.outputFile, err = os.OpenFile(l.config.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	flags := os.O_CREATE | os.O_WRONLY
+	if l.config.OutputFormat == config.FormatHAR {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_APPEND
+	}
+
+	l.outputFile, err = os.OpenFile(l.config.OutputFile, flags, 0644)
 	if err != nil {
 		return err
 	}
@@ -81,12 +88,18 @@ func (l *EnhancedLogger) setupFileOutput() error {
 	switch l.config.OutputFormat {
 	case config.FormatCSV:
 		l.csvWriter = csv.NewWriter(l.outputFile)
-		// Write CSV header with request/response body columns
-		header := []string{"timestamp", "session_id", "domain", "method", "url", "status_code", "status", "content_type", "request_size", "response_size", "duration_ms", "request_headers", "response_headers", "request_body", "response_body"}
-		if err := l.csvWriter.Write(header); err != nil {
+		info, err := l.outputFile.Stat()
+		if err != nil {
 			return err
 		}
-		l.csvWriter.Flush()
+		if info.Size() == 0 {
+			// Write CSV header with request/response body columns
+			header := []string{"timestamp", "session_id", "domain", "method", "url", "status_code", "status", "content_type", "request_size", "response_size", "duration_ms", "request_headers", "response_headers", "request_body", "response_body"}
+			if err := l.csvWriter.Write(header); err != nil {
+				return err
+			}
+			l.csvWriter.Flush()
+		}
 	case config.FormatJSON:
 		// JSON format doesn't need special initialization
 	case config.FormatText:
@@ -537,10 +550,10 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 func (l *EnhancedLogger) logTrafficAsHAR(record *TrafficRecord) error {
 	// Convert TrafficRecord to HAR entry
 	harEntry := ConvertTrafficRecordToHAREntry(record)
-	
+
 	// Add entry to HAR log
 	l.harLog.Log.Entries = append(l.harLog.Log.Entries, harEntry)
-	
+
 	// Note: We don't write to file immediately for HAR format
 	// The complete HAR will be written when Close() is called
 	return nil
@@ -555,7 +568,7 @@ func (l *EnhancedLogger) Close() error {
 	}
 
 	// Write complete HAR file if using HAR format
-	if l.config.OutputFormat == config.FormatHAR && l.outputFile != nil && len(l.harLog.Log.Entries) > 0 {
+	if l.config.OutputFormat == config.FormatHAR && l.outputFile != nil {
 		harBytes, err := l.harLog.ToJSON()
 		if err != nil {
 			lastErr = err
