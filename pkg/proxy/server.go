@@ -316,10 +316,6 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			s.logger.Error("Failed to write response to client: %v", err)
 			break // Break connection on write error
 		}
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body after write: %v", err)
-			break
-		}
 
 		// HTTP connection persistence logic
 		if req.Close || resp.Close {
