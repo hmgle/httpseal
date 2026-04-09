@@ -279,13 +279,15 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 
 		// Capture response and create traffic record
 		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration, requestBody)
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			s.logger.Error("Failed to close upstream response body: %v", closeErr)
-			return
-		}
 		if err != nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				s.logger.Warn("Failed to close upstream response body: %v", closeErr)
+			}
 			s.logger.Error("Failed to capture response: %v", err)
 			return
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			s.logger.Warn("Failed to close upstream response body: %v", closeErr)
 		}
 
 		// Log the traffic record
