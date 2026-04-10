@@ -68,9 +68,15 @@ type Config struct {
 	FileLogLevel        LogLevel     // File traffic logging verbosity (can be different from console)
 	LogFile             string       // File to save system logs (separate from traffic)
 	Quiet               bool         // Suppress console output
+	NoRedact            bool         // Disable default redaction of sensitive traffic fields
 	CaptureBodyLimit    int          // Maximum body bytes to capture per message, 0 = unlimited
 	LogBodyLimit        int          // Maximum captured body bytes to print/write, 0 = full captured body
 	FilterDomains       []string     // Only log these domains (empty = all)
+	FilterHostExact     []string     // Only log exact host matches (empty = all)
+	FilterHostSuffix    []string     // Only log host suffix matches (empty = all)
+	FilterMethods       []string     // Only log these HTTP methods (empty = all)
+	FilterStatusCodes   []int        // Only log these HTTP status codes (empty = all)
+	FilterPaths         []string     // Only log when request path contains one of these strings (empty = all)
 	ExcludeContentTypes []string     // Exclude these content types
 	DecompressResponse  bool         // Decompress compressed response bodies for logging (default: true)
 
@@ -116,10 +122,16 @@ type FileConfig struct {
 	FileLogLevel        *string   `json:"file_log_level,omitempty"`
 	LogFile             *string   `json:"log_file,omitempty"`
 	Quiet               *bool     `json:"quiet,omitempty"`
+	NoRedact            *bool     `json:"no_redact,omitempty"`
 	CaptureBodyLimit    *int      `json:"capture_body_limit,omitempty"`
 	LogBodyLimit        *int      `json:"log_body_limit,omitempty"`
 	MaxBodySize         *int      `json:"max_body_size,omitempty"` // Deprecated alias for log_body_limit
 	FilterDomains       *[]string `json:"filter_domains,omitempty"`
+	FilterHostExact     *[]string `json:"filter_host_exact,omitempty"`
+	FilterHostSuffix    *[]string `json:"filter_host_suffix,omitempty"`
+	FilterMethods       *[]string `json:"filter_methods,omitempty"`
+	FilterStatusCodes   *[]int    `json:"filter_status_codes,omitempty"`
+	FilterPaths         *[]string `json:"filter_paths,omitempty"`
 	ExcludeContentTypes *[]string `json:"exclude_content_types,omitempty"`
 	DecompressResponse  *bool     `json:"decompress_response,omitempty"`
 
@@ -202,6 +214,11 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 			*dst = append([]string(nil), (*src)...)
 		}
 	}
+	applyIntSlice := func(flagName string, src *[]int, dst *[]int) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = append([]int(nil), (*src)...)
+		}
+	}
 
 	// Network settings
 	applyBool("verbose", fileConfig.Verbose, &c.Verbose)
@@ -244,6 +261,7 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	}
 	applyString("log-file", fileConfig.LogFile, &c.LogFile)
 	applyBool("quiet", fileConfig.Quiet, &c.Quiet)
+	applyBool("no-redact", fileConfig.NoRedact, &c.NoRedact)
 	applyInt("capture-body-limit", fileConfig.CaptureBodyLimit, &c.CaptureBodyLimit)
 	if fileConfig.LogBodyLimit != nil && !isFlagChanged("log-body-limit") && !isFlagChanged("max-body-size") {
 		c.LogBodyLimit = *fileConfig.LogBodyLimit
@@ -251,6 +269,11 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 		applyInt("max-body-size", fileConfig.MaxBodySize, &c.LogBodyLimit)
 	}
 	applyStringSlice("filter-domain", fileConfig.FilterDomains, &c.FilterDomains)
+	applyStringSlice("filter-host-exact", fileConfig.FilterHostExact, &c.FilterHostExact)
+	applyStringSlice("filter-host-suffix", fileConfig.FilterHostSuffix, &c.FilterHostSuffix)
+	applyStringSlice("filter-method", fileConfig.FilterMethods, &c.FilterMethods)
+	applyIntSlice("filter-status", fileConfig.FilterStatusCodes, &c.FilterStatusCodes)
+	applyStringSlice("filter-path", fileConfig.FilterPaths, &c.FilterPaths)
 	applyStringSlice(
 		"exclude-content-type",
 		fileConfig.ExcludeContentTypes,

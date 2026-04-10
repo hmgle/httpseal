@@ -58,9 +58,15 @@ var (
 	fileLogLevel        string
 	logFile             string
 	quiet               bool
+	noRedact            bool
 	captureBodyLimit    int
 	logBodyLimit        int
 	filterDomains       []string
+	filterHostExact     []string
+	filterHostSuffix    []string
+	filterMethods       []string
+	filterStatusCodes   []int
+	filterPaths         []string
 	excludeContentTypes []string
 	decompressResponse  bool
 
@@ -175,10 +181,16 @@ Examples:
 	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose")
 	rootCmd.Flags().StringVar(&logFile, "log-file", "", "Output system logs to file (separate from traffic data)")
 	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress console output (quiet mode)")
+	rootCmd.Flags().BoolVar(&noRedact, "no-redact", false, "Disable default redaction of sensitive headers, URLs, and text bodies")
 	rootCmd.Flags().IntVar(&captureBodyLimit, "capture-body-limit", 1024*1024, "Maximum request/response body bytes to capture per message (0=unlimited)")
 	rootCmd.Flags().IntVar(&logBodyLimit, "log-body-limit", 0, "Maximum captured body bytes to print/write (0=full captured body)")
 	rootCmd.Flags().IntVar(&logBodyLimit, "max-body-size", 0, "Deprecated alias for --log-body-limit")
 	rootCmd.Flags().StringSliceVar(&filterDomains, "filter-domain", []string{}, "Only log traffic for these domains (can be repeated)")
+	rootCmd.Flags().StringSliceVar(&filterHostExact, "filter-host-exact", []string{}, "Only log traffic for these exact hosts")
+	rootCmd.Flags().StringSliceVar(&filterHostSuffix, "filter-host-suffix", []string{}, "Only log traffic for hosts matching these suffixes")
+	rootCmd.Flags().StringSliceVar(&filterMethods, "filter-method", []string{}, "Only log traffic for these HTTP methods")
+	rootCmd.Flags().IntSliceVar(&filterStatusCodes, "filter-status", []int{}, "Only log traffic for these HTTP status codes")
+	rootCmd.Flags().StringSliceVar(&filterPaths, "filter-path", []string{}, "Only log traffic whose request path contains one of these strings")
 	rootCmd.Flags().StringSliceVar(&excludeContentTypes, "exclude-content-type", []string{}, "Exclude these content types from logging")
 	rootCmd.Flags().BoolVar(&decompressResponse, "decompress-response", true, "Decompress compressed response bodies for logging")
 
@@ -278,9 +290,15 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		FileLogLevel:        config.LogLevel(effectiveFileLogLevel),
 		LogFile:             logFile,
 		Quiet:               quiet,
+		NoRedact:            noRedact,
 		CaptureBodyLimit:    captureBodyLimit,
 		LogBodyLimit:        logBodyLimit,
 		FilterDomains:       filterDomains,
+		FilterHostExact:     filterHostExact,
+		FilterHostSuffix:    filterHostSuffix,
+		FilterMethods:       filterMethods,
+		FilterStatusCodes:   filterStatusCodes,
+		FilterPaths:         filterPaths,
 		ExcludeContentTypes: excludeContentTypes,
 		DecompressResponse:  decompressResponse,
 
@@ -499,9 +517,15 @@ func loadConfigFile(cmd *cobra.Command) error {
 		FileLogLevel:               config.LogLevel(fileLogLevel),
 		LogFile:                    logFile,
 		Quiet:                      quiet,
+		NoRedact:                   noRedact,
 		CaptureBodyLimit:           captureBodyLimit,
 		LogBodyLimit:               logBodyLimit,
 		FilterDomains:              filterDomains,
+		FilterHostExact:            filterHostExact,
+		FilterHostSuffix:           filterHostSuffix,
+		FilterMethods:              filterMethods,
+		FilterStatusCodes:          filterStatusCodes,
+		FilterPaths:                filterPaths,
 		ExcludeContentTypes:        excludeContentTypes,
 		DecompressResponse:         decompressResponse,
 		EnableMirror:               enableMirror,
@@ -540,9 +564,15 @@ func loadConfigFile(cmd *cobra.Command) error {
 	fileLogLevel = string(tempConfig.FileLogLevel)
 	logFile = tempConfig.LogFile
 	quiet = tempConfig.Quiet
+	noRedact = tempConfig.NoRedact
 	captureBodyLimit = tempConfig.CaptureBodyLimit
 	logBodyLimit = tempConfig.LogBodyLimit
 	filterDomains = tempConfig.FilterDomains
+	filterHostExact = tempConfig.FilterHostExact
+	filterHostSuffix = tempConfig.FilterHostSuffix
+	filterMethods = tempConfig.FilterMethods
+	filterStatusCodes = tempConfig.FilterStatusCodes
+	filterPaths = tempConfig.FilterPaths
 	excludeContentTypes = tempConfig.ExcludeContentTypes
 	decompressResponse = tempConfig.DecompressResponse
 	enableMirror = tempConfig.EnableMirror
@@ -610,6 +640,11 @@ func validateFlags() error {
 	}
 	if _, _, err := net.SplitHostPort(upstreamDNS); err != nil {
 		return fmt.Errorf("upstream-dns must be in host:port form: %w", err)
+	}
+	for _, statusCode := range filterStatusCodes {
+		if statusCode < 100 || statusCode > 599 {
+			return fmt.Errorf("filter-status must contain valid HTTP status codes (100-599)")
+		}
 	}
 	if (upstreamClientCert == "") != (upstreamClientKey == "") {
 		return fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")

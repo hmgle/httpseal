@@ -348,6 +348,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 
 		resp.Body = responseBody.Reader()
 		trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+		logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
 
 		// Log the traffic record
 		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {

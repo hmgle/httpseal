@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -175,6 +176,26 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 		if !found {
 			return false
 		}
+	}
+
+	if len(l.config.FilterHostExact) > 0 && !matchesExactHost(record.Domain, l.config.FilterHostExact) {
+		return false
+	}
+
+	if len(l.config.FilterHostSuffix) > 0 && !matchesHostSuffix(record.Domain, l.config.FilterHostSuffix) {
+		return false
+	}
+
+	if len(l.config.FilterMethods) > 0 && !matchesMethod(record.Request.Method, l.config.FilterMethods) {
+		return false
+	}
+
+	if len(l.config.FilterStatusCodes) > 0 && !matchesStatusCode(record.Response.StatusCode, l.config.FilterStatusCodes) {
+		return false
+	}
+
+	if len(l.config.FilterPaths) > 0 && !matchesPath(record.Request.URL, l.config.FilterPaths) {
+		return false
 	}
 
 	// Check content type exclusion
@@ -631,4 +652,56 @@ func firstHeaderValue(headers map[string][]string, name string) string {
 		return ""
 	}
 	return values[0]
+}
+
+func matchesExactHost(host string, allow []string) bool {
+	host = strings.ToLower(host)
+	for _, candidate := range allow {
+		if host == strings.ToLower(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesHostSuffix(host string, suffixes []string) bool {
+	host = strings.ToLower(host)
+	for _, suffix := range suffixes {
+		suffix = strings.ToLower(strings.TrimPrefix(suffix, "."))
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesMethod(method string, allow []string) bool {
+	for _, candidate := range allow {
+		if strings.EqualFold(method, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesStatusCode(statusCode int, allow []int) bool {
+	for _, candidate := range allow {
+		if statusCode == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesPath(rawURL string, allow []string) bool {
+	path := rawURL
+	if parsed, err := url.Parse(rawURL); err == nil && parsed.Path != "" {
+		path = parsed.Path
+	}
+	for _, candidate := range allow {
+		if strings.Contains(path, candidate) {
+			return true
+		}
+	}
+	return false
 }

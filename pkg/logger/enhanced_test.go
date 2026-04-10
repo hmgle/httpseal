@@ -157,6 +157,63 @@ func TestConvertTrafficRecordToHAREntryUsesSchemeQueryAndRepeatedHeaders(t *test
 	}
 }
 
+func TestRedactTrafficRecordRedactsSensitiveHeadersURLAndBody(t *testing.T) {
+	record := sampleTrafficRecord()
+	record.Request.URL = "/login?token=abc123"
+	record.Request.Headers["Authorization"] = []string{"Bearer abc123"}
+	record.Request.Headers["Cookie"] = []string{"session=abcdef"}
+	record.Request.Body = `{"access_token":"abc123","password":"secret"}`
+	record.Response.Headers["Set-Cookie"] = []string{"session=abcdef"}
+	record.Response.Body = `{"refresh_token":"def456"}`
+
+	RedactTrafficRecord(record, false)
+
+	if got := firstHeaderValue(record.Request.Headers, "Authorization"); got != redactedValue {
+		t.Fatalf("expected authorization header to be redacted, got %q", got)
+	}
+	if got := firstHeaderValue(record.Response.Headers, "Set-Cookie"); got != redactedValue {
+		t.Fatalf("expected set-cookie header to be redacted, got %q", got)
+	}
+	if strings.Contains(record.Request.URL, "abc123") {
+		t.Fatalf("expected sensitive query value to be redacted, got %q", record.Request.URL)
+	}
+	if strings.Contains(record.Request.Body, "abc123") || strings.Contains(record.Request.Body, "secret") {
+		t.Fatalf("expected sensitive request body fields to be redacted, got %q", record.Request.Body)
+	}
+	if strings.Contains(record.Response.Body, "def456") {
+		t.Fatalf("expected sensitive response body fields to be redacted, got %q", record.Response.Body)
+	}
+}
+
+func TestShouldLogTrafficHonorsHostMethodStatusAndPathFilters(t *testing.T) {
+	record := sampleTrafficRecord()
+	record.Domain = "api.example.com"
+	record.Request.Method = "POST"
+	record.Request.URL = "/v1/tokens"
+	record.Response.StatusCode = 201
+
+	log, err := NewEnhanced(&config.Config{
+		LogLevel:          config.LogLevelMinimal,
+		FilterHostSuffix:  []string{"example.com"},
+		FilterMethods:     []string{"POST"},
+		FilterStatusCodes: []int{201},
+		FilterPaths:       []string{"/v1/"},
+	})
+	if err != nil {
+		t.Fatalf("new enhanced logger: %v", err)
+	}
+
+	enhanced := log.(*EnhancedLogger)
+	if !enhanced.shouldLogTraffic(record) {
+		t.Fatal("expected record to match the configured filters")
+	}
+
+	enhanced.config.FilterMethods = []string{"GET"}
+	if enhanced.shouldLogTraffic(record) {
+		t.Fatal("expected method filter mismatch to suppress traffic")
+	}
+}
+
 func sampleTrafficRecord() *TrafficRecord {
 	return &TrafficRecord{
 		Timestamp:  time.Unix(0, 0),
