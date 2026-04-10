@@ -188,10 +188,10 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	}
 
 	if s.isHTTPS {
-		s.logger.Info(">> HTTPS Connection to %s (mapped from %s)", realDomain, destIP)
+		s.logger.Debug("Accepted HTTPS connection for %s (mapped from %s)", realDomain, destIP)
 		s.handleHTTPSConnection(clientConn, realDomain)
 	} else {
-		s.logger.Info(">> HTTP Connection to %s (mapped from %s)", realDomain, destIP)
+		s.logger.Debug("Accepted HTTP connection for %s (mapped from %s)", realDomain, destIP)
 		s.handleHTTPConnection(clientConn, realDomain)
 	}
 }
@@ -262,9 +262,6 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			}
 			req.Body.Close() // Close original body
 		}
-
-		// Log the request with body
-		s.logRequestWithBody(req, realDomain, requestBody)
 
 		// Forward the request to the real server
 		startTime := time.Now()
@@ -377,28 +374,6 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	}
 
 	return client.Do(newReq)
-}
-
-// logRequestWithBody logs the HTTP request details including body
-func (s *Server) logRequestWithBody(req *http.Request, domain string, requestBody []byte) {
-	s.logger.Info(">> Request to %s", domain)
-	s.logger.Info("%s %s %s", req.Method, req.URL.Path, req.Proto)
-	s.logger.Info("Host: %s", req.Host)
-	s.logger.Info("User-Agent: %s", req.UserAgent())
-
-	for name, values := range req.Header {
-		for _, value := range values {
-			s.logger.Debug("%s: %s", name, value)
-		}
-	}
-
-	// Log request body if present
-	if len(requestBody) > 0 {
-		s.logger.Info("Request body (%d bytes):", len(requestBody))
-		s.logger.Debug("Body content: %s", string(requestBody))
-	}
-
-	s.logger.Info("")
 }
 
 // captureTrafficAndCreateRecord captures the response and creates a traffic record

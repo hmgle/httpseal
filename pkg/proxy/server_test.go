@@ -24,6 +24,39 @@ func (noopTrafficLogger) Error(string, ...interface{})           {}
 func (noopTrafficLogger) LogTraffic(*logger.TrafficRecord) error { return nil }
 func (noopTrafficLogger) Close() error                           { return nil }
 
+type spyTrafficLogger struct {
+	infoCount    int
+	debugCount   int
+	warnCount    int
+	errorCount   int
+	trafficCount int
+}
+
+func (l *spyTrafficLogger) Debug(string, ...interface{}) {
+	l.debugCount++
+}
+
+func (l *spyTrafficLogger) Info(string, ...interface{}) {
+	l.infoCount++
+}
+
+func (l *spyTrafficLogger) Warn(string, ...interface{}) {
+	l.warnCount++
+}
+
+func (l *spyTrafficLogger) Error(string, ...interface{}) {
+	l.errorCount++
+}
+
+func (l *spyTrafficLogger) LogTraffic(*logger.TrafficRecord) error {
+	l.trafficCount++
+	return nil
+}
+
+func (l *spyTrafficLogger) Close() error {
+	return nil
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -170,5 +203,72 @@ func TestHandleHTTPRequestsStillWritesResponseWhenUpstreamCloseFails(t *testing.
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("proxy did not finish after response write")
+	}
+}
+
+func TestHandleHTTPRequestsOnlyEmitTrafficViaTrafficLogger(t *testing.T) {
+	cfg := &config.Config{ConnectionTimeout: 1}
+	log := &spyTrafficLogger{}
+	server := NewHTTPServer(80, nil, log, nil, cfg)
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				Status:        "200 OK",
+				StatusCode:    http.StatusOK,
+				Proto:         "HTTP/1.1",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        http.Header{"Content-Type": []string{"text/plain"}},
+				Body:          io.NopCloser(strings.NewReader("ok")),
+				ContentLength: 2,
+				Close:         true,
+				Request:       req,
+			}, nil
+		}),
+	}
+	server.httpClient = client
+	server.socks5Client = client
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "http")
+		close(done)
+	}()
+
+	request := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after response write")
+	}
+
+	if log.trafficCount != 1 {
+		t.Fatalf("expected 1 traffic record, got %d", log.trafficCount)
+	}
+	if log.infoCount != 0 {
+		t.Fatalf("expected no direct info-level traffic logs, got %d", log.infoCount)
+	}
+	if log.errorCount != 0 {
+		t.Fatalf("expected no error logs, got %d", log.errorCount)
 	}
 }
