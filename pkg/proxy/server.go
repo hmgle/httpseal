@@ -283,7 +283,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		}
 
 		resp.Body = responseBody.Reader()
-		trafficRecord := s.createTrafficRecord(req, resp, realDomain, duration, requestBody, responseBody)
+		trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
 
 		// Log the traffic record
 		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
@@ -384,7 +384,7 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 }
 
 // createTrafficRecord converts captured request/response data into a traffic record.
-func (s *Server) createTrafficRecord(req *http.Request, resp *http.Response, domain string, duration time.Duration, requestBodyCapture, responseBodyCapture *bodyCapture) *logger.TrafficRecord {
+func (s *Server) createTrafficRecord(req *http.Request, resp *http.Response, domain, scheme string, duration time.Duration, requestBodyCapture, responseBodyCapture *bodyCapture) *logger.TrafficRecord {
 	requestBody := ""
 	requestBodySize := 0
 	requestBodyTruncated := false
@@ -445,9 +445,11 @@ func (s *Server) createTrafficRecord(req *http.Request, resp *http.Response, dom
 
 	// Create traffic record
 	record := &logger.TrafficRecord{
-		Timestamp: time.Now(),
-		Domain:    domain,
-		Duration:  duration,
+		Timestamp:  time.Now(),
+		Domain:     domain,
+		Scheme:     scheme,
+		Duration:   duration,
+		DurationMs: duration.Milliseconds(),
 		Request: logger.HTTPRequest{
 			Method:        req.Method,
 			URL:           req.URL.String(),

@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -85,24 +86,97 @@ func TestHAROutputRewritesFileWithValidDocument(t *testing.T) {
 	}
 }
 
+func TestJSONOutputPreservesHeaderArraysAndDurationMs(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "traffic.json")
+
+	log, err := NewEnhanced(&config.Config{
+		OutputFile:   outputPath,
+		OutputFormat: config.FormatJSON,
+		LogLevel:     config.LogLevelNone,
+		FileLogLevel: config.LogLevelMinimal,
+		Quiet:        true,
+	})
+	if err != nil {
+		t.Fatalf("new enhanced logger: %v", err)
+	}
+
+	record := sampleTrafficRecord()
+	record.Request.Headers["X-Test"] = []string{"one", "two"}
+	record.Response.Headers["Set-Cookie"] = []string{"a=1", "b=2"}
+
+	if err := log.LogTraffic(record); err != nil {
+		t.Fatalf("log traffic: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read json output: %v", err)
+	}
+
+	var decoded TrafficRecord
+	if err := json.Unmarshal(bytes.TrimSpace(content), &decoded); err != nil {
+		t.Fatalf("unmarshal traffic json: %v", err)
+	}
+
+	if decoded.DurationMs != 15 {
+		t.Fatalf("expected duration_ms 15, got %d", decoded.DurationMs)
+	}
+	if len(decoded.Request.Headers["X-Test"]) != 2 {
+		t.Fatalf("expected repeated request headers to survive, got %#v", decoded.Request.Headers["X-Test"])
+	}
+	if len(decoded.Response.Headers["Set-Cookie"]) != 2 {
+		t.Fatalf("expected repeated response headers to survive, got %#v", decoded.Response.Headers["Set-Cookie"])
+	}
+}
+
+func TestConvertTrafficRecordToHAREntryUsesSchemeQueryAndRepeatedHeaders(t *testing.T) {
+	record := sampleTrafficRecord()
+	record.Request.URL = "/search?q=seal&q=http"
+	record.Request.Headers["X-Test"] = []string{"one", "two"}
+
+	entry := ConvertTrafficRecordToHAREntry(record)
+
+	if entry.Request.URL != "http://example.com/search?q=seal&q=http" {
+		t.Fatalf("unexpected HAR request URL: %q", entry.Request.URL)
+	}
+	if len(entry.Request.QueryString) != 2 {
+		t.Fatalf("expected query string to preserve repeated params, got %#v", entry.Request.QueryString)
+	}
+
+	xTestCount := 0
+	for _, header := range entry.Request.Headers {
+		if header.Name == "X-Test" {
+			xTestCount++
+		}
+	}
+	if xTestCount != 2 {
+		t.Fatalf("expected repeated HAR headers, got %d copies", xTestCount)
+	}
+}
+
 func sampleTrafficRecord() *TrafficRecord {
 	return &TrafficRecord{
-		Timestamp: time.Unix(0, 0),
-		Domain:    "example.com",
-		Duration:  15 * time.Millisecond,
+		Timestamp:  time.Unix(0, 0),
+		Domain:     "example.com",
+		Scheme:     "http",
+		Duration:   15 * time.Millisecond,
+		DurationMs: 15,
 		Request: HTTPRequest{
 			Method:   "GET",
 			URL:      "/",
 			Proto:    "HTTP/1.1",
 			Host:     "example.com",
-			Headers:  map[string]string{"User-Agent": "test"},
+			Headers:  map[string][]string{"User-Agent": []string{"test"}},
 			BodySize: 0,
 		},
 		Response: HTTPResponse{
 			Proto:       "HTTP/1.1",
 			Status:      "200 OK",
 			StatusCode:  200,
-			Headers:     map[string]string{"Content-Type": "text/plain"},
+			Headers:     map[string][]string{"Content-Type": []string{"text/plain"}},
 			Body:        "ok",
 			BodySize:    2,
 			ContentType: "text/plain",

@@ -204,7 +204,7 @@ func (l *EnhancedLogger) logTrafficToConsole(record *TrafficRecord) {
 		l.Info(">> Request to %s", record.Domain)
 		l.Info("%s %s %s", record.Request.Method, record.Request.URL, record.Request.Proto)
 		l.Info("Host: %s", record.Request.Host)
-		l.Info("User-Agent: %s", record.Request.Headers["User-Agent"])
+		l.Info("User-Agent: %s", firstHeaderValue(record.Request.Headers, "User-Agent"))
 		l.Info("")
 		l.Info("<< Response from %s", record.Domain)
 		l.Info("%s %s", record.Response.Proto, record.Response.Status)
@@ -225,11 +225,13 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 	l.Info("Host: %s", record.Request.Host)
 
 	// Log request headers
-	for name, value := range record.Request.Headers {
-		if name == "Host" {
-			l.Info("%s: %s", name, value)
-		} else {
-			l.Debug("%s: %s", name, value)
+	for name, values := range record.Request.Headers {
+		for _, value := range values {
+			if name == "Host" {
+				l.Info("%s: %s", name, value)
+			} else {
+				l.Debug("%s: %s", name, value)
+			}
 		}
 	}
 
@@ -246,18 +248,20 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 	l.Info("%s %s", record.Response.Proto, record.Response.Status)
 
 	// Log response headers
-	for name, value := range record.Response.Headers {
-		if name == "Content-Type" || name == "Content-Length" {
-			l.Info("%s: %s", name, value)
-		} else {
-			l.Debug("%s: %s", name, value)
+	for name, values := range record.Response.Headers {
+		for _, value := range values {
+			if name == "Content-Type" || name == "Content-Length" {
+				l.Info("%s: %s", name, value)
+			} else {
+				l.Debug("%s: %s", name, value)
+			}
 		}
 	}
 
 	// Log response body if present (with size limit and content type filtering)
 	if record.Response.Body != "" {
 		contentType := strings.ToLower(record.Response.ContentType)
-		contentEncoding := record.Response.Headers["Content-Encoding"]
+		contentEncoding := firstHeaderValue(record.Response.Headers, "Content-Encoding")
 
 		// Check if content should be logged based on type
 		isTextContent := strings.Contains(contentType, "text/") ||
@@ -360,7 +364,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		record.Response.ContentType,
 		strconv.Itoa(record.Request.BodySize),
 		strconv.Itoa(record.Response.BodySize),
-		strconv.FormatInt(record.Duration.Milliseconds(), 10),
+		strconv.FormatInt(record.DurationMs, 10),
 		string(requestHeaders),
 		string(responseHeaders),
 		requestBody,
@@ -388,7 +392,7 @@ func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 		text = fmt.Sprintf("[%s] >> Request to %s\n%s %s %s\nHost: %s\nUser-Agent: %s\n\n[%s] << Response from %s\n%s %s\nContent-Type: %s\nContent-Length: %d\n\n",
 			record.Timestamp.Format("15:04:05"), record.Domain,
 			record.Request.Method, record.Request.URL, record.Request.Proto,
-			record.Request.Host, record.Request.Headers["User-Agent"],
+			record.Request.Host, firstHeaderValue(record.Request.Headers, "User-Agent"),
 			record.Timestamp.Format("15:04:05"), record.Domain,
 			record.Response.Proto, record.Response.Status,
 			record.Response.ContentType, record.Response.BodySize)
@@ -427,7 +431,9 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 
 	// Request headers
 	for name, value := range record.Request.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Request body
@@ -444,7 +450,9 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 
 	// Response headers
 	for name, value := range record.Response.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Response body
@@ -481,7 +489,9 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Request headers
 	for name, value := range record.Request.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Request body (always include for file output in verbose mode)
@@ -498,7 +508,9 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Response headers
 	for name, value := range record.Response.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Response body (always include for file output in verbose mode)
@@ -507,7 +519,7 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 		// Indicate if content was decompressed
 		bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
-		contentEncoding := record.Response.Headers["Content-Encoding"]
+		contentEncoding := firstHeaderValue(record.Response.Headers, "Content-Encoding")
 		if contentEncoding != "" {
 			if strings.HasPrefix(body, "[Compressed ") {
 				bodyDescription += fmt.Sprintf(" [%s - decompression failed]", contentEncoding)
@@ -602,13 +614,21 @@ func generateSessionID() string {
 	return fmt.Sprintf("tb_%d", time.Now().Unix())
 }
 
-// HeadersToMap converts http.Header to map[string]string
-func HeadersToMap(headers http.Header) map[string]string {
-	result := make(map[string]string)
+// HeadersToMap converts http.Header to map[string][]string.
+func HeadersToMap(headers http.Header) map[string][]string {
+	result := make(map[string][]string)
 	for name, values := range headers {
 		if len(values) > 0 {
-			result[name] = values[0] // Take first value
+			result[name] = append([]string(nil), values...)
 		}
 	}
 	return result
+}
+
+func firstHeaderValue(headers map[string][]string, name string) string {
+	values := headers[name]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
