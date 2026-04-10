@@ -34,6 +34,7 @@ type Config struct {
 	ExtraVerbose bool // Extra verbose mode (-vv)
 	DNSIP        string
 	DNSPort      int
+	UpstreamDNS  string
 	ProxyPort    int
 	CADir        string
 	KeepCA       bool // Keep CA directory after exit
@@ -85,6 +86,7 @@ type FileConfig struct {
 	ExtraVerbose *bool   `json:"extra_verbose,omitempty"`
 	DNSIP        *string `json:"dns_ip,omitempty"`
 	DNSPort      *int    `json:"dns_port,omitempty"`
+	UpstreamDNS  *string `json:"upstream_dns,omitempty"`
 	ProxyPort    *int    `json:"proxy_port,omitempty"`
 	CADir        *string `json:"ca_dir,omitempty"`
 	KeepCA       *bool   `json:"keep_ca,omitempty"`
@@ -206,6 +208,7 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	applyBool("verbose", fileConfig.ExtraVerbose, &c.ExtraVerbose)
 	applyString("dns-ip", fileConfig.DNSIP, &c.DNSIP)
 	applyInt("dns-port", fileConfig.DNSPort, &c.DNSPort)
+	applyString("upstream-dns", fileConfig.UpstreamDNS, &c.UpstreamDNS)
 	applyInt("proxy-port", fileConfig.ProxyPort, &c.ProxyPort)
 	applyString("ca-dir", fileConfig.CADir, &c.CADir)
 	applyBool("keep-ca", fileConfig.KeepCA, &c.KeepCA)

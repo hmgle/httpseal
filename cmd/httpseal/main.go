@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -27,6 +28,7 @@ var (
 	extraVerbose bool
 	dnsIP        string
 	dnsPort      int
+	upstreamDNS  string
 	proxyPort    int
 	caDir        string
 	keepCA       bool
@@ -143,6 +145,7 @@ Examples:
 
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
+	rootCmd.Flags().StringVar(&upstreamDNS, "upstream-dns", "8.8.8.8:53", "Upstream DNS server used for forwarded non-hijacked queries")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
 	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: XDG_CONFIG_HOME/httpseal/ca)")
 	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (always true for default persistent directory)")
@@ -241,6 +244,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		ExtraVerbose: extraVerbose,
 		DNSIP:        dnsIP,
 		DNSPort:      dnsPort,
+		UpstreamDNS:  upstreamDNS,
 		ProxyPort:    proxyPort,
 		CADir:        caDir, // Will be updated below if temporary
 		KeepCA:       keepCA,
@@ -337,7 +341,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize DNS server
-	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, log)
+	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, cfg.UpstreamDNS, log)
 
 	// Initialize HTTP mirror server (if enabled)
 	var mirrorServer *mirror.Server
@@ -473,6 +477,7 @@ func loadConfigFile(cmd *cobra.Command) error {
 		ExtraVerbose:               extraVerbose,
 		DNSIP:                      dnsIP,
 		DNSPort:                    dnsPort,
+		UpstreamDNS:                upstreamDNS,
 		ProxyPort:                  proxyPort,
 		CADir:                      caDir,
 		KeepCA:                     keepCA,
@@ -513,6 +518,7 @@ func loadConfigFile(cmd *cobra.Command) error {
 	extraVerbose = tempConfig.ExtraVerbose
 	dnsIP = tempConfig.DNSIP
 	dnsPort = tempConfig.DNSPort
+	upstreamDNS = tempConfig.UpstreamDNS
 	proxyPort = tempConfig.ProxyPort
 	caDir = tempConfig.CADir
 	keepCA = tempConfig.KeepCA
@@ -601,6 +607,9 @@ func validateFlags() error {
 	}
 	if logBodyLimit < 0 {
 		return fmt.Errorf("log-body-limit must be >= 0")
+	}
+	if _, _, err := net.SplitHostPort(upstreamDNS); err != nil {
+		return fmt.Errorf("upstream-dns must be in host:port form: %w", err)
 	}
 	if (upstreamClientCert == "") != (upstreamClientKey == "") {
 		return fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")
