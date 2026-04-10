@@ -18,7 +18,7 @@ _httpseal() {
         'application/pdf'
     )
 
-    local log_levels="none minimal normal verbose"
+    local log_levels="none minimal normal verbose extra-verbose"
     local output_formats="text json csv har"
     local timeout_values="30 60 120 300"
     local dns_ips="127.0.53.1 127.0.0.1"
@@ -60,6 +60,9 @@ _httpseal() {
             COMPREPLY=($(compgen -W "$dns_ports" -- "$cur"))
             return
             ;;
+        --upstream-dns)
+            return
+            ;;
         --exclude-content-type)
             if [[ "$cur" == *,* ]]; then
                 # Handle comma-separated values
@@ -76,9 +79,20 @@ _httpseal() {
             COMPREPLY=($(compgen -W "$log_levels" -- "$cur"))
             return
             ;;
-        --filter-domain)
+        --filter-domain|--filter-host-exact)
             # Complete hostnames if possible
             _known_hosts_real -- "$cur"
+            return
+            ;;
+        --filter-host-suffix|--filter-path|--upstream-server-name)
+            return
+            ;;
+        --filter-method)
+            COMPREPLY=($(compgen -W "GET POST PUT PATCH DELETE HEAD OPTIONS" -- "$cur"))
+            return
+            ;;
+        --filter-status)
+            COMPREPLY=($(compgen -W "200 201 204 301 302 400 401 403 404 429 500 502 503" -- "$cur"))
             return
             ;;
         --format)
@@ -89,7 +103,7 @@ _httpseal() {
             COMPREPLY=($(compgen -W "$http_ports" -- "$cur"))
             return
             ;;
-        --max-body-size)
+        --capture-body-limit|--log-body-limit|--max-body-size)
             COMPREPLY=($(compgen -W "$body_sizes" -- "$cur"))
             return
             ;;
@@ -103,6 +117,10 @@ _httpseal() {
             ;;
         --socks5-addr)
             COMPREPLY=($(compgen -W "$socks5_addrs" -- "$cur"))
+            return
+            ;;
+        --upstream-ca-file|--upstream-client-cert|--upstream-client-key)
+            _filedir
             return
             ;;
         --socks5-pass|--socks5-user)
@@ -119,17 +137,26 @@ _httpseal() {
             --connection-timeout
             --dns-ip
             --dns-port
+            --upstream-dns
             --enable-http
             --enable-mirror
             --exclude-content-type
             --file-log-level
             --filter-domain
+            --filter-host-exact
+            --filter-host-suffix
+            --filter-method
+            --filter-status
+            --filter-path
             --format
             --help
             --http-port
             --keep-ca
             --log-file
             --log-level
+            --no-redact
+            --capture-body-limit
+            --log-body-limit
             --max-body-size
             --mirror-port
             --output
@@ -139,6 +166,11 @@ _httpseal() {
             --socks5-addr
             --socks5-pass
             --socks5-user
+            --upstream-ca-file
+            --upstream-client-cert
+            --upstream-client-key
+            --upstream-server-name
+            --upstream-insecure-skip-verify
             --verbose
             --version
         "

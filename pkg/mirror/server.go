@@ -17,15 +17,16 @@ import (
 
 // TrafficRecord represents a mirrored HTTP exchange
 type TrafficRecord struct {
-	ID           uint64
-	Timestamp    time.Time
-	OriginalHost string
-	Method       string
-	URL          string
-	RequestBody  string
-	ResponseBody string
-	StatusCode   int
-	Headers      http.Header
+	ID              uint64
+	Timestamp       time.Time
+	OriginalHost    string
+	Method          string
+	URL             string
+	RequestBody     string
+	ResponseBody    string
+	StatusCode      int
+	RequestHeaders  http.Header
+	ResponseHeaders http.Header
 }
 
 // Server implements an HTTP mirror server for Wireshark analysis
@@ -93,17 +94,18 @@ func (s *Server) Stop() error {
 }
 
 // MirrorTraffic mirrors an HTTP exchange for Wireshark analysis
-func (s *Server) MirrorTraffic(originalHost, method, url, requestBody, responseBody string, statusCode int, headers http.Header) {
+func (s *Server) MirrorTraffic(originalHost, method, url, requestBody, responseBody string, statusCode int, requestHeaders, responseHeaders http.Header) {
 	record := &TrafficRecord{
-		ID:           atomic.AddUint64(&s.connID, 1),
-		Timestamp:    time.Now(),
-		OriginalHost: originalHost,
-		Method:       method,
-		URL:          url,
-		RequestBody:  requestBody,
-		ResponseBody: responseBody,
-		StatusCode:   statusCode,
-		Headers:      headers,
+		ID:              atomic.AddUint64(&s.connID, 1),
+		Timestamp:       time.Now(),
+		OriginalHost:    originalHost,
+		Method:          method,
+		URL:             url,
+		RequestBody:     requestBody,
+		ResponseBody:    responseBody,
+		StatusCode:      statusCode,
+		RequestHeaders:  requestHeaders.Clone(),
+		ResponseHeaders: responseHeaders.Clone(),
 	}
 
 	s.stateMu.RLock()
@@ -194,54 +196,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 // sendHealthCheckResponse sends a health check response
 func (s *Server) sendHealthCheckResponse(conn net.Conn) {
-	response := "HTTP/1.1 200 OK\r\n" +
-		"Content-Type: text/plain\r\n" +
-		"Content-Length: 47\r\n" +
-		"X-HTTPSeal-Mirror: true\r\n" +
-		"\r\n" +
-		"HTTPSeal Mirror Server - Ready for Wireshark"
-	conn.Write([]byte(response))
+	conn.Write([]byte(buildHealthCheckResponse()))
 }
 
 // sendErrorResponse sends an HTTP error response
 func (s *Server) sendErrorResponse(conn net.Conn, statusCode int, message string) {
-	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, http.StatusText(statusCode))
-	response += "Content-Type: text/plain\r\n"
-	response += fmt.Sprintf("Content-Length: %d\r\n", len(message))
-	response += "X-HTTPSeal-Mirror: true\r\n"
-	response += "\r\n"
-	response += message
-	conn.Write([]byte(response))
+	conn.Write([]byte(buildMirrorErrorResponse(statusCode, message)))
 }
 
 // sendMirroredResponse sends the stored mirrored response
 func (s *Server) sendMirroredResponse(conn net.Conn, record *TrafficRecord) {
-	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", record.StatusCode, http.StatusText(record.StatusCode))
-	response += "X-HTTPSeal-Original-Host: " + record.OriginalHost + "\r\n"
-	response += "X-HTTPSeal-Mirror-ID: " + strconv.FormatUint(record.ID, 10) + "\r\n"
-	response += "X-HTTPSeal-Timestamp: " + record.Timestamp.Format(time.RFC3339) + "\r\n"
-
-	// Add original response headers (filtered)
-	for name, values := range record.Headers {
-		// Skip connection-specific headers
-		lowerName := strings.ToLower(name)
-		if lowerName == "connection" || lowerName == "content-length" || lowerName == "transfer-encoding" {
-			continue
-		}
-		for _, value := range values {
-			response += fmt.Sprintf("%s: %s\r\n", name, value)
-		}
-	}
-
-	if record.ResponseBody != "" {
-		response += fmt.Sprintf("Content-Length: %d\r\n", len(record.ResponseBody))
-		response += "\r\n"
-		response += record.ResponseBody
-	} else {
-		response += "\r\n"
-	}
-
-	conn.Write([]byte(response))
+	conn.Write([]byte(buildMirroredResponse(record)))
 }
 
 // processExchanges processes mirrored traffic records
@@ -274,37 +239,8 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 		}
 		defer conn.Close()
 
-		// Send HTTP request
-		request := fmt.Sprintf("%s %s HTTP/1.1\r\n", record.Method, record.URL)
-		request += fmt.Sprintf("Host: %s\r\n", record.OriginalHost)
-		request += "X-HTTPSeal-Original-Host: " + record.OriginalHost + "\r\n"
-		request += "X-HTTPSeal-Mirror-ID: " + strconv.FormatUint(record.ID, 10) + "\r\n"
-		request += "X-HTTPSeal-Timestamp: " + record.Timestamp.Format(time.RFC3339) + "\r\n"
-		request += "Connection: close\r\n"
-
-		// Add filtered original headers
-		for name, values := range record.Headers {
-			// Skip connection-specific and problematic headers
-			lowerName := strings.ToLower(name)
-			if lowerName == "connection" || lowerName == "content-length" ||
-				lowerName == "transfer-encoding" || lowerName == "host" {
-				continue
-			}
-			for _, value := range values {
-				request += fmt.Sprintf("%s: %s\r\n", name, value)
-			}
-		}
-
-		if record.RequestBody != "" {
-			request += fmt.Sprintf("Content-Length: %d\r\n", len(record.RequestBody))
-			request += "\r\n"
-			request += record.RequestBody
-		} else {
-			request += "\r\n"
-		}
-
 		// Send request
-		if _, err := conn.Write([]byte(request)); err != nil {
+		if _, err := conn.Write([]byte(buildMirrorRequest(record))); err != nil {
 			s.logger.Error("Failed to send mirror request: %v", err)
 			return
 		}
@@ -314,6 +250,82 @@ func (s *Server) simulateHTTPExchange(record *TrafficRecord) error {
 	}()
 
 	return nil
+}
+
+func buildHealthCheckResponse() string {
+	return "HTTP/1.1 200 OK\r\n" +
+		"Content-Type: text/plain\r\n" +
+		"Content-Length: 47\r\n" +
+		"X-HTTPSeal-Mirror: true\r\n" +
+		"\r\n" +
+		"HTTPSeal Mirror Server - Ready for Wireshark"
+}
+
+func buildMirrorErrorResponse(statusCode int, message string) string {
+	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, http.StatusText(statusCode))
+	response += "Content-Type: text/plain\r\n"
+	response += fmt.Sprintf("Content-Length: %d\r\n", len(message))
+	response += "X-HTTPSeal-Mirror: true\r\n"
+	response += "\r\n"
+	response += message
+	return response
+}
+
+func buildMirroredResponse(record *TrafficRecord) string {
+	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", record.StatusCode, http.StatusText(record.StatusCode))
+	response += "X-HTTPSeal-Original-Host: " + record.OriginalHost + "\r\n"
+	response += "X-HTTPSeal-Mirror-ID: " + strconv.FormatUint(record.ID, 10) + "\r\n"
+	response += "X-HTTPSeal-Timestamp: " + record.Timestamp.Format(time.RFC3339) + "\r\n"
+
+	for name, values := range record.ResponseHeaders {
+		lowerName := strings.ToLower(name)
+		if lowerName == "connection" || lowerName == "content-length" || lowerName == "transfer-encoding" {
+			continue
+		}
+		for _, value := range values {
+			response += fmt.Sprintf("%s: %s\r\n", name, value)
+		}
+	}
+
+	if record.ResponseBody != "" {
+		response += fmt.Sprintf("Content-Length: %d\r\n", len(record.ResponseBody))
+		response += "\r\n"
+		response += record.ResponseBody
+	} else {
+		response += "\r\n"
+	}
+
+	return response
+}
+
+func buildMirrorRequest(record *TrafficRecord) string {
+	request := fmt.Sprintf("%s %s HTTP/1.1\r\n", record.Method, record.URL)
+	request += fmt.Sprintf("Host: %s\r\n", record.OriginalHost)
+	request += "X-HTTPSeal-Original-Host: " + record.OriginalHost + "\r\n"
+	request += "X-HTTPSeal-Mirror-ID: " + strconv.FormatUint(record.ID, 10) + "\r\n"
+	request += "X-HTTPSeal-Timestamp: " + record.Timestamp.Format(time.RFC3339) + "\r\n"
+	request += "Connection: close\r\n"
+
+	for name, values := range record.RequestHeaders {
+		lowerName := strings.ToLower(name)
+		if lowerName == "connection" || lowerName == "content-length" ||
+			lowerName == "transfer-encoding" || lowerName == "host" {
+			continue
+		}
+		for _, value := range values {
+			request += fmt.Sprintf("%s: %s\r\n", name, value)
+		}
+	}
+
+	if record.RequestBody != "" {
+		request += fmt.Sprintf("Content-Length: %d\r\n", len(record.RequestBody))
+		request += "\r\n"
+		request += record.RequestBody
+	} else {
+		request += "\r\n"
+	}
+
+	return request
 }
 
 // GetPort returns the port the mirror server is listening on

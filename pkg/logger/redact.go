@@ -9,8 +9,31 @@ import (
 const redactedValue = "[REDACTED]"
 
 var (
-	bearerTokenPattern = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+\/=-]+\b`)
-	jsonSecretPattern  = regexp.MustCompile(`(?i)("?(?:access_token|refresh_token|id_token|api[_-]?key|apikey|password|passwd|secret|token|session(?:_id)?|client_secret)"?\s*[:=]\s*"?)([^"&,\\\s]+)("?)`)
+	bearerTokenPattern  = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+\/=-]+\b`)
+	jsonSecretPattern   = regexp.MustCompile(`(?i)("?(?:access_token|refresh_token|id_token|api[_-]?key|apikey|password|passwd|secret|token|session(?:_id)?|client_secret)"?\s*[:=]\s*"?)([^"&,\\\s]+)("?)`)
+	sensitiveFieldNames = map[string]struct{}{
+		"authorization":        {},
+		"proxy-authorization":  {},
+		"cookie":               {},
+		"set-cookie":           {},
+		"x-api-key":            {},
+		"x-auth-token":         {},
+		"x-csrf-token":         {},
+		"x-amz-security-token": {},
+		"access-token":         {},
+		"refresh-token":        {},
+		"id-token":             {},
+		"api-key":              {},
+		"apikey":               {},
+		"password":             {},
+		"passwd":               {},
+		"secret":               {},
+		"token":                {},
+		"session":              {},
+		"session-id":           {},
+		"sessionid":            {},
+		"client-secret":        {},
+	}
 )
 
 func RedactTrafficRecord(record *TrafficRecord, disabled bool) {
@@ -45,17 +68,7 @@ func redactURLString(raw string) string {
 		return raw
 	}
 
-	query := parsed.Query()
-	for name := range query {
-		if isSensitiveFieldName(name) {
-			values := query[name]
-			for i := range values {
-				values[i] = redactedValue
-			}
-			query[name] = values
-		}
-	}
-	parsed.RawQuery = query.Encode()
+	parsed.RawQuery = redactDelimitedValues(parsed.RawQuery, "&")
 	return parsed.String()
 }
 
@@ -65,18 +78,7 @@ func redactBody(body string, contentType string) string {
 	}
 
 	if strings.Contains(strings.ToLower(contentType), "application/x-www-form-urlencoded") {
-		if values, err := url.ParseQuery(body); err == nil {
-			for name := range values {
-				if isSensitiveFieldName(name) {
-					entries := values[name]
-					for i := range entries {
-						entries[i] = redactedValue
-					}
-					values[name] = entries
-				}
-			}
-			body = values.Encode()
-		}
+		return redactDelimitedValues(body, "&")
 	}
 
 	body = bearerTokenPattern.ReplaceAllString(body, "Bearer "+redactedValue)
@@ -85,19 +87,59 @@ func redactBody(body string, contentType string) string {
 }
 
 func isSensitiveFieldName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch name {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie",
-		"x-api-key", "x-auth-token", "x-csrf-token", "x-amz-security-token":
+	name = normalizeFieldName(name)
+	if _, ok := sensitiveFieldNames[name]; ok {
 		return true
 	}
 
-	if strings.Contains(name, "token") || strings.Contains(name, "secret") ||
-		strings.Contains(name, "password") || strings.Contains(name, "passwd") ||
-		strings.Contains(name, "api-key") || strings.Contains(name, "apikey") ||
-		strings.Contains(name, "session") {
-		return true
+	for _, suffix := range []string{"-token", "-secret", "-password", "-passwd", "-api-key", "-apikey", "-session-id", "-sessionid"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
 	}
 
 	return false
+}
+
+func normalizeFieldName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var builder strings.Builder
+	builder.Grow(len(name))
+	lastDash := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func redactDelimitedValues(raw string, sep string) string {
+	if raw == "" {
+		return raw
+	}
+
+	parts := strings.Split(raw, sep)
+	changed := false
+	for i, part := range parts {
+		keyPart, valuePart, hasValue := strings.Cut(part, "=")
+		keyName, err := url.QueryUnescape(keyPart)
+		if err != nil || !isSensitiveFieldName(keyName) || !hasValue {
+			continue
+		}
+		parts[i] = keyPart + "=" + url.QueryEscape(redactedValue)
+		if valuePart != url.QueryEscape(redactedValue) {
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	return strings.Join(parts, sep)
 }

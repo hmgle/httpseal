@@ -171,14 +171,14 @@ Examples:
 	rootCmd.Flags().StringVar(&upstreamCAFile, "upstream-ca-file", "", "Additional CA bundle used to verify upstream TLS certificates")
 	rootCmd.Flags().StringVar(&upstreamClientCert, "upstream-client-cert", "", "Client certificate PEM used for upstream mTLS")
 	rootCmd.Flags().StringVar(&upstreamClientKey, "upstream-client-key", "", "Client private key PEM used for upstream mTLS")
-	rootCmd.Flags().StringVar(&upstreamServerName, "upstream-server-name", "", "Override the upstream TLS server name (SNI and hostname verification)")
+	rootCmd.Flags().StringVar(&upstreamServerName, "upstream-server-name", "", "Globally override the upstream TLS server name (SNI and hostname verification) for all upstream TLS connections")
 	rootCmd.Flags().BoolVar(&upstreamInsecureSkipVerify, "upstream-insecure-skip-verify", false, "Skip upstream TLS certificate verification")
 
 	// Traffic logging and output
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output traffic to file (automatically uses verbose level for complete data)")
 	rootCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text, json, csv, har")
-	rootCmd.Flags().StringVar(&logLevel, "log-level", "normal", "Console logging level: none, minimal, normal, verbose")
-	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose")
+	rootCmd.Flags().StringVar(&logLevel, "log-level", "normal", "Console logging level: none, minimal, normal, verbose, extra-verbose")
+	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose, extra-verbose")
 	rootCmd.Flags().StringVar(&logFile, "log-file", "", "Output system logs to file (separate from traffic data)")
 	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress console output (quiet mode)")
 	rootCmd.Flags().BoolVar(&noRedact, "no-redact", false, "Disable default redaction of sensitive headers, URLs, and text bodies")
@@ -350,6 +350,9 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 
 	if !cfg.Quiet {
 		log.Info("Starting HTTPSeal v%s", version)
+	}
+	if cfg.UpstreamServerName != "" {
+		log.Warn("--upstream-server-name applies to every upstream TLS connection; use it only when all intercepted TLS traffic targets the same certificate name")
 	}
 
 	// Initialize certificate authority

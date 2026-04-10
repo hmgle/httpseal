@@ -133,8 +133,8 @@ httpseal --socks5-addr 127.0.0.1:1080 --enable-mirror -o traffic.har --format ha
 # HTTP-only monitoring with custom port
 httpseal --enable-http --http-port 8080 -q -o http-traffic.log -- some-http-app
 
-# Filter specific domains and limit body size (works for both protocols)
-httpseal --enable-http --filter-domain httpbin.org --max-body-size 1024 -- curl http://httpbin.org/get https://httpbin.org/json
+# Filter specific domains and limit logged body size (works for both protocols)
+httpseal --enable-http --filter-domain httpbin.org --log-body-limit 1024 -- curl http://httpbin.org/get https://httpbin.org/json
 
 # Minimal logging level for both HTTP and HTTPS
 httpseal --enable-http --log-level minimal -o summary.txt -- wget http://httpbin.org/json
@@ -151,8 +151,8 @@ httpseal -o traffic.har --format har -- curl https://api.github.com/users/octoca
 # Configuration file with advanced settings
 httpseal --config ./my-config.json -- curl https://api.github.com/users/octocat
 
-# Advanced filtering with session tracking and size limits
-httpseal --filter-domain api.github.com --max-body-size 2048 --exclude-content-type image/ -o filtered.csv --format csv -- curl https://api.github.com/users/octocat
+# Advanced filtering with explicit host/method/status filters and log size limits
+httpseal --filter-host-suffix github.com --filter-method GET --filter-status 200 --log-body-limit 2048 --exclude-content-type image/ -o filtered.csv --format csv -- curl https://api.github.com/users/octocat
 
 # SOCKS5 proxy support (useful for bypassing network restrictions)
 httpseal --socks5-addr 127.0.0.1:1080 -- curl https://www.google.com
@@ -166,8 +166,8 @@ httpseal --config ./my-config.json -- curl https://httpbin.org/get
 # Dual logging - minimal console, verbose file
 httpseal --log-level minimal --file-log-level verbose -o detailed.log -- curl https://api.github.com/users/octocat
 
-# Advanced filtering and connection management
-httpseal --filter-domain github.com --connection-timeout 60 --max-body-size 2048 -- curl https://api.github.com/users/octocat
+# Advanced filtering, DNS override, and connection management
+httpseal --filter-domain github.com --upstream-dns 1.1.1.1:53 --connection-timeout 60 --log-body-limit 2048 -- curl https://api.github.com/users/octocat
 
 # Certificate reuse for performance (automatic with persistent CA directory)
 httpseal --ca-dir ./my-ca -o traffic.json -- curl https://api.github.com/users/octocat
@@ -284,13 +284,24 @@ $XDG_CONFIG_HOME/httpseal/config.json
   "enable_http": true,
   "enable_mirror": true,
   "mirror_port": 8080,
+  "upstream_dns": "1.1.1.1:53",
   "socks5_enabled": true,
   "socks5_address": "127.0.0.1:1080",
   "socks5_username": "myuser",
   "socks5_password": "mypass",
+  "upstream_ca_file": "./certs/upstream-ca.pem",
+  "upstream_client_cert": "./certs/client.pem",
+  "upstream_client_key": "./certs/client-key.pem",
+  "upstream_server_name": "api.internal.test",
   "connection_timeout": 60,
-  "max_body_size": 4096,
+  "no_redact": false,
+  "capture_body_limit": 1048576,
+  "log_body_limit": 4096,
   "filter_domains": ["api.github.com", "httpbin.org"],
+  "filter_host_suffix": ["github.com"],
+  "filter_methods": ["GET"],
+  "filter_status_codes": [200],
+  "filter_paths": ["/users/"],
   "exclude_content_types": ["image/", "application/octet-stream"],
   "ca_dir": "./my-ca",
   "keep_ca": true
@@ -309,6 +320,17 @@ httpseal --config ./my-config.json -- wget https://httpbin.org/get
 # Override config file settings with CLI flags (CLI takes precedence)
 httpseal --config ./config.json --verbose --output traffic.json -- curl https://httpbin.org/get
 ```
+
+### Compatibility and Semantics Notes
+
+- `duration_ms` is now emitted explicitly in JSON, CSV, and HAR output.
+- JSON request/response headers now preserve repeated values as arrays. For example, `"Set-Cookie": ["a=1", "b=2"]` instead of a single string.
+- `--filter-domain`, `--filter-host-exact`, `--filter-host-suffix`, `--filter-method`, `--filter-status`, and `--filter-path` combine with AND semantics when used together.
+- `--capture-body-limit` controls how many bytes are captured into logs per request/response. Small bodies stay in memory; larger bodies spill to a dedicated temp directory.
+- `--log-body-limit` limits what gets written to console, text, CSV, JSON, and HAR output. `--max-body-size` is still accepted as a deprecated alias.
+- Redaction is enabled by default for sensitive headers, URL query parameters, and text bodies. Use `--no-redact` to disable it.
+- `--upstream-server-name` is a global SNI / hostname-verification override for every upstream TLS connection. It is intended for single-upstream or controlled testing scenarios.
+- Wireshark mirror traffic keeps the original request and response bodies unredacted and untrimmed so captures reflect the actual exchange.
 
 ## 🌐 SOCKS5 Proxy Support
 
@@ -438,6 +460,7 @@ httpseal [options] -- <command> [args...]
 Network Options:
       --dns-ip string           DNS server IP address (default "127.0.53.1")
       --dns-port int           DNS server port (default 53)
+      --upstream-dns string    Upstream DNS server used for forwarded non-hijacked queries (default "8.8.8.8:53")
       --proxy-port int         HTTPS proxy port (default 443)
       --connection-timeout int  Client connection idle timeout in seconds (default 30)
 
@@ -454,6 +477,11 @@ SOCKS5 Proxy Support:
       --socks5-addr string     SOCKS5 proxy address (auto-enables SOCKS5) (default "127.0.0.1:1080")
       --socks5-user string     SOCKS5 username for authentication (optional)
       --socks5-pass string     SOCKS5 password for authentication (optional)
+      --upstream-ca-file string              Additional CA bundle used to verify upstream TLS certificates
+      --upstream-client-cert string          Client certificate PEM used for upstream mTLS
+      --upstream-client-key string           Client private key PEM used for upstream mTLS
+      --upstream-server-name string          Globally override the upstream TLS server name for all upstream TLS connections
+      --upstream-insecure-skip-verify        Skip upstream TLS certificate verification
 
 Wireshark Integration:
       --enable-mirror          Enable HTTP mirror server for Wireshark analysis
@@ -467,11 +495,19 @@ Output Options:
       --log-file string        Output system logs to file (separate from traffic data)
   -q, --quiet                  Suppress console output (quiet mode - requires -o)
   -v, --verbose                Enable verbose output (-v for verbose, -vv for extra-verbose)
+      --no-redact              Disable default redaction of sensitive headers, URLs, and text bodies
 
 Filtering and Limits:
       --filter-domain strings        Only log traffic for these domains (can be repeated)
+      --filter-host-exact strings    Only log traffic for these exact hosts
+      --filter-host-suffix strings   Only log traffic for hosts matching these suffixes
+      --filter-method strings        Only log traffic for these HTTP methods
+      --filter-status ints           Only log traffic for these HTTP status codes
+      --filter-path strings          Only log traffic whose request path contains one of these strings
       --exclude-content-type strings Exclude these content types from logging (can be repeated)
-      --max-body-size int            Maximum response body size to log (bytes, 0=unlimited) (default 0)
+      --capture-body-limit int       Maximum request/response body bytes to capture per message (default 1048576)
+      --log-body-limit int           Maximum captured body bytes to print/write (bytes, 0=full captured body) (default 0)
+      --max-body-size int            Deprecated alias for --log-body-limit
 
 Configuration:
   -c, --config string          Configuration file path (default: XDG_CONFIG_HOME/httpseal/config.json)
@@ -800,7 +836,7 @@ httpseal -- wget --user-agent="Mozilla/5.0 ..." https://api.example.com
 
 ```csv
 timestamp,session_id,domain,method,url,status_code,status,content_type,request_size,response_size,duration_ms,request_headers,response_headers,request_body,response_body
-2025-07-25T15:01:19+08:00,tb_1640445042,api.github.com,GET,/users/octocat,200,200 OK,application/json,0,290,2203,"{""User-Agent"":""curl/8.5.0-DEV"",""Accept"":""*/*""}","{""Content-Type"":""application/json"",""Content-Length"":""290""}","","{""login"":""octocat"",""id"":1,...}"
+2025-07-25T15:01:19+08:00,tb_1640445042,api.github.com,GET,/users/octocat,200,200 OK,application/json,0,290,2203,"{""User-Agent"":[""curl/8.5.0-DEV""],""Accept"":[""*/*""]}","{""Content-Type"":[""application/json""],""Content-Length"":[""290""]}","","{""login"":""octocat"",""id"":1,...}"
 ```
 
 ### 5. Configuration File Usage
@@ -811,9 +847,15 @@ timestamp,session_id,domain,method,url,status_code,status,content_type,request_s
   "output_file": "traffic.har",
   "output_format": "har",
   "enable_mirror": true,
+  "upstream_dns": "1.1.1.1:53",
   "socks5_enabled": true,
   "socks5_address": "127.0.0.1:1080",
+  "no_redact": false,
+  "capture_body_limit": 1048576,
+  "log_body_limit": 2048,
   "filter_domains": ["api.github.com"],
+  "filter_methods": ["GET"],
+  "filter_status_codes": [200],
   "keep_ca": true,
   "ca_dir": "./my-ca"
 }
@@ -854,12 +896,12 @@ Response body (290 bytes):
 ### 7. Advanced Filtering Output
 
 ```bash
-# Only show GitHub API traffic, exclude images, limit body size
-httpseal --filter-domain api.github.com --exclude-content-type image/ --max-body-size 1024 -v
+# Only show GitHub API traffic, exclude images, limit logged body size
+httpseal --filter-domain api.github.com --exclude-content-type image/ --log-body-limit 1024 -v
 
 [15:30:42] INFO: Filtering domains: api.github.com
 [15:30:42] INFO: Excluding content types: image/
-[15:30:42] INFO: Maximum body size: 1024 bytes
+[15:30:42] INFO: Maximum logged body size: 1024 bytes
 [15:30:43] INFO: >> Request to api.github.com (passed filters)
 [15:30:43] INFO: << Response: application/json (body truncated to 1024 bytes)
 ```

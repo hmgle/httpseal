@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -42,6 +43,9 @@ type Server struct {
 
 // NewServer creates a new HTTPS proxy server
 func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) (*Server, error) {
+	if err := prepareBodySpoolDir(); err != nil {
+		return nil, err
+	}
 	s := &Server{
 		port:          port,
 		ca:            ca,
@@ -67,6 +71,9 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 
 // NewHTTPServer creates a new HTTP proxy server
 func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) (*Server, error) {
+	if err := prepareBodySpoolDir(); err != nil {
+		return nil, err
+	}
 	s := &Server{
 		port:          port,
 		ca:            nil, // No CA needed for HTTP
@@ -327,26 +334,19 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		duration := time.Since(startTime)
 
 		if err != nil {
-			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
-				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
-			}
 			s.logger.Error("Failed to forward request to %s: %v", realDomain, err)
-			s.writeProxyErrorResponse(conn, req, http.StatusBadGateway, "Failed to reach upstream server.", err)
+			s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to reach upstream server.", err)
 			break
 		}
 
 		// Spool the response body to disk and capture only the configured prefix.
 		responseBody, err := spoolBody(resp.Body, int64(s.config.CaptureBodyLimit))
 		if err != nil {
-			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
-				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
-			}
 			s.logger.Error("Failed to spool response body: %v", err)
-			s.writeProxyErrorResponse(conn, req, http.StatusBadGateway, "Failed to capture upstream response.", err)
+			s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to capture upstream response.", err)
 			break
 		}
 
-		resp.Body = responseBody.Reader()
 		trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
 		logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
 
@@ -357,13 +357,22 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 
 		// Mirror the traffic for Wireshark analysis (if mirror server is enabled)
 		if s.mirrorServer != nil {
+			requestBodyText, reqErr := bodyCaptureString(requestBody)
+			if reqErr != nil {
+				s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
+			}
+			responseBodyText, respErr := bodyCaptureString(responseBody)
+			if respErr != nil {
+				s.logger.Warn("Failed to read response body for mirroring: %v", respErr)
+			}
 			s.mirrorServer.MirrorTraffic(
 				realDomain,
-				trafficRecord.Request.Method,
-				trafficRecord.Request.URL,
-				trafficRecord.Request.Body,
-				trafficRecord.Response.Body,
-				trafficRecord.Response.StatusCode,
+				req.Method,
+				req.URL.String(),
+				requestBodyText,
+				responseBodyText,
+				resp.StatusCode,
+				req.Header,
 				resp.Header,
 			)
 		}
@@ -372,6 +381,15 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		s.normalizeResponseForHTTP11(resp, responseBody.size)
 
 		// Write the standardized response back to the client
+		resp.Body, err = openBodyCaptureReader(responseBody)
+		if err != nil {
+			s.logger.Error("Failed to reopen response body for client write: %v", err)
+			if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
+			}
+			s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to replay captured upstream response.", err)
+			break
+		}
 		writeErr := resp.Write(conn)
 		if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
 			s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
@@ -392,7 +410,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 	}
 }
 
-func (s *Server) writeProxyErrorResponse(conn net.Conn, req *http.Request, statusCode int, message string, cause error) {
+func (s *Server) newProxyErrorResponse(req *http.Request, statusCode int, message string, cause error) (*http.Response, string) {
 	body := message
 	if cause != nil && (s.config.Verbose || s.config.ExtraVerbose) {
 		body = fmt.Sprintf("%s\n\n%s", message, cause.Error())
@@ -414,9 +432,51 @@ func (s *Server) writeProxyErrorResponse(conn net.Conn, req *http.Request, statu
 	resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	resp.Header.Set("Connection", "close")
+	return resp, body
+}
+
+func (s *Server) writeProxyErrorResponse(conn net.Conn, req *http.Request, statusCode int, message string, cause error) {
+	resp, _ := s.newProxyErrorResponse(req, statusCode, message, cause)
+	if err := resp.Write(conn); err != nil {
+		s.logger.Error("Failed to write proxy error response: %v", err)
+	}
+}
+
+func (s *Server) respondWithProxyError(conn net.Conn, req *http.Request, realDomain, scheme string, duration time.Duration, requestBody *bodyCapture, statusCode int, message string, cause error) {
+	resp, body := s.newProxyErrorResponse(req, statusCode, message, cause)
+	responseBody := &bodyCapture{
+		memory: []byte(body),
+		size:   int64(len(body)),
+	}
+
+	trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+	logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
+	if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
+		s.logger.Error("Failed to log traffic: %v", err)
+	}
+
+	if s.mirrorServer != nil {
+		requestBodyText, reqErr := bodyCaptureString(requestBody)
+		if reqErr != nil {
+			s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
+		}
+		s.mirrorServer.MirrorTraffic(
+			realDomain,
+			req.Method,
+			req.URL.String(),
+			requestBodyText,
+			body,
+			statusCode,
+			req.Header,
+			resp.Header,
+		)
+	}
 
 	if err := resp.Write(conn); err != nil {
 		s.logger.Error("Failed to write proxy error response: %v", err)
+	}
+	if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+		s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 	}
 }
 
@@ -437,7 +497,11 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody *bodyCapture, scheme string) (*http.Response, error) {
 	var body io.Reader
 	if requestBody != nil {
-		body = requestBody.Reader()
+		reader, err := openBodyCaptureReader(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("open captured request body: %w", err)
+		}
+		body = reader
 	}
 
 	// Create a new request to avoid modifying the original
@@ -566,6 +630,31 @@ func (s *Server) createTrafficRecord(req *http.Request, resp *http.Response, dom
 	}
 
 	return record
+}
+
+func openBodyCaptureReader(capture *bodyCapture) (io.ReadCloser, error) {
+	if capture == nil || capture.size == 0 {
+		return nil, nil
+	}
+	if capture.path != "" {
+		file, err := os.Open(capture.path)
+		if err != nil {
+			return nil, fmt.Errorf("open spooled body %s: %w", capture.path, err)
+		}
+		return file, nil
+	}
+	return io.NopCloser(bytes.NewReader(capture.memory)), nil
+}
+
+func bodyCaptureString(capture *bodyCapture) (string, error) {
+	if capture == nil {
+		return "", nil
+	}
+	body, err := capture.ReadAll()
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 // normalizeResponseForHTTP11 standardizes HTTP response to HTTP/1.1 for client compatibility

@@ -132,6 +132,82 @@ func TestJSONOutputPreservesHeaderArraysAndDurationMs(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputsHonorLogBodyLimit(t *testing.T) {
+	record := sampleTrafficRecord()
+	record.Request.Body = "request-body"
+	record.Request.BodySize = len(record.Request.Body)
+	record.Response.Body = "response-body"
+	record.Response.BodySize = len(record.Response.Body)
+
+	jsonPath := filepath.Join(t.TempDir(), "traffic.json")
+	jsonLog, err := NewEnhanced(&config.Config{
+		OutputFile:   jsonPath,
+		OutputFormat: config.FormatJSON,
+		LogLevel:     config.LogLevelNone,
+		FileLogLevel: config.LogLevelMinimal,
+		LogBodyLimit: 7,
+		Quiet:        true,
+	})
+	if err != nil {
+		t.Fatalf("new json logger: %v", err)
+	}
+	if err := jsonLog.LogTraffic(record); err != nil {
+		t.Fatalf("log json traffic: %v", err)
+	}
+	if err := jsonLog.Close(); err != nil {
+		t.Fatalf("close json logger: %v", err)
+	}
+
+	var decoded TrafficRecord
+	jsonContent, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read json output: %v", err)
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(jsonContent), &decoded); err != nil {
+		t.Fatalf("unmarshal limited json: %v", err)
+	}
+	if decoded.Request.Body != "request... (truncated)" {
+		t.Fatalf("expected limited request body in json, got %q", decoded.Request.Body)
+	}
+	if decoded.Response.Body != "respons... (truncated)" {
+		t.Fatalf("expected limited response body in json, got %q", decoded.Response.Body)
+	}
+
+	harPath := filepath.Join(t.TempDir(), "traffic.har")
+	harLog, err := NewEnhanced(&config.Config{
+		OutputFile:   harPath,
+		OutputFormat: config.FormatHAR,
+		LogLevel:     config.LogLevelNone,
+		FileLogLevel: config.LogLevelMinimal,
+		LogBodyLimit: 7,
+		Quiet:        true,
+	})
+	if err != nil {
+		t.Fatalf("new har logger: %v", err)
+	}
+	if err := harLog.LogTraffic(record); err != nil {
+		t.Fatalf("log har traffic: %v", err)
+	}
+	if err := harLog.Close(); err != nil {
+		t.Fatalf("close har logger: %v", err)
+	}
+
+	harContent, err := os.ReadFile(harPath)
+	if err != nil {
+		t.Fatalf("read har output: %v", err)
+	}
+	var document HAR
+	if err := json.Unmarshal(harContent, &document); err != nil {
+		t.Fatalf("unmarshal limited har: %v", err)
+	}
+	if got := document.Log.Entries[0].Request.PostData.Text; got != "request... (truncated)" {
+		t.Fatalf("expected limited HAR request body, got %q", got)
+	}
+	if got := document.Log.Entries[0].Response.Content.Text; got != "respons... (truncated)" {
+		t.Fatalf("expected limited HAR response body, got %q", got)
+	}
+}
+
 func TestConvertTrafficRecordToHAREntryUsesSchemeQueryAndRepeatedHeaders(t *testing.T) {
 	record := sampleTrafficRecord()
 	record.Request.URL = "/search?q=seal&q=http"
@@ -182,6 +258,30 @@ func TestRedactTrafficRecordRedactsSensitiveHeadersURLAndBody(t *testing.T) {
 	}
 	if strings.Contains(record.Response.Body, "def456") {
 		t.Fatalf("expected sensitive response body fields to be redacted, got %q", record.Response.Body)
+	}
+}
+
+func TestRedactTrafficRecordPreservesQueryOrderAndAvoidsOverRedaction(t *testing.T) {
+	record := sampleTrafficRecord()
+	record.Request.URL = "/oauth?z=1&token=abc123&a=2&token_type=Bearer"
+	record.Request.Headers["X-Request-Token-Type"] = []string{"Bearer"}
+	record.Request.Headers["X-Session-Type"] = []string{"interactive"}
+	record.Request.Headers["Content-Type"] = []string{"application/x-www-form-urlencoded"}
+	record.Request.Body = "z=1&token=abc123&a=2&token_type=Bearer"
+
+	RedactTrafficRecord(record, false)
+
+	if got := record.Request.URL; got != "/oauth?z=1&token=%5BREDACTED%5D&a=2&token_type=Bearer" {
+		t.Fatalf("expected query order to stay stable, got %q", got)
+	}
+	if got := firstHeaderValue(record.Request.Headers, "X-Request-Token-Type"); got != "Bearer" {
+		t.Fatalf("expected token type header to remain visible, got %q", got)
+	}
+	if got := firstHeaderValue(record.Request.Headers, "X-Session-Type"); got != "interactive" {
+		t.Fatalf("expected session type header to remain visible, got %q", got)
+	}
+	if got := record.Request.Body; got != "z=1&token=%5BREDACTED%5D&a=2&token_type=Bearer" {
+		t.Fatalf("expected form body order to stay stable, got %q", got)
 	}
 }
 

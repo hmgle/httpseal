@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +31,7 @@ type spyTrafficLogger struct {
 	warnCount    int
 	errorCount   int
 	trafficCount int
+	records      []*logger.TrafficRecord
 }
 
 func (l *spyTrafficLogger) Debug(string, ...interface{}) {
@@ -50,8 +50,9 @@ func (l *spyTrafficLogger) Error(string, ...interface{}) {
 	l.errorCount++
 }
 
-func (l *spyTrafficLogger) LogTraffic(*logger.TrafficRecord) error {
+func (l *spyTrafficLogger) LogTraffic(record *logger.TrafficRecord) error {
 	l.trafficCount++
+	l.records = append(l.records, record)
 	return nil
 }
 
@@ -79,19 +80,30 @@ func (b *errorCloseBody) Close() error {
 
 func TestHandleHTTPRequestsKeepsHTTP11ConnectionsAlive(t *testing.T) {
 	requestCount := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		w.Header().Set("Content-Type", "text/plain")
-		io.WriteString(w, r.URL.Path)
-	}))
-	defer upstream.Close()
-
-	realDomain := strings.TrimPrefix(upstream.URL, "http://")
+	realDomain := "example.com"
 	cfg := &config.Config{ConnectionTimeout: 1}
 	server, err := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
 	if err != nil {
 		t.Fatalf("new http server: %v", err)
 	}
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			return &http.Response{
+				Status:        "200 OK",
+				StatusCode:    http.StatusOK,
+				Proto:         "HTTP/1.1",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        http.Header{"Content-Type": []string{"text/plain"}},
+				Body:          io.NopCloser(strings.NewReader(req.URL.Path)),
+				ContentLength: int64(len(req.URL.Path)),
+				Request:       req,
+			}, nil
+		}),
+	}
+	server.httpClient = client
+	server.socks5Client = client
 
 	clientConn, proxyConn := net.Pipe()
 	defer clientConn.Close()
@@ -285,8 +297,9 @@ func TestHandleHTTPRequestsOnlyEmitTrafficViaTrafficLogger(t *testing.T) {
 }
 
 func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
+	log := &spyTrafficLogger{}
 	cfg := &config.Config{ConnectionTimeout: 1}
-	server, err := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
 	if err != nil {
 		t.Fatalf("new http server: %v", err)
 	}
@@ -331,6 +344,12 @@ func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Failed to reach upstream server.") {
 		t.Fatalf("unexpected error body: %q", string(body))
+	}
+	if log.trafficCount != 1 {
+		t.Fatalf("expected synthetic 502 to be logged once, got %d records", log.trafficCount)
+	}
+	if got := log.records[0].Response.StatusCode; got != http.StatusBadGateway {
+		t.Fatalf("expected logged status 502, got %d", got)
 	}
 
 	select {

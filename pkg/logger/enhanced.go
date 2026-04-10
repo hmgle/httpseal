@@ -335,13 +335,13 @@ func (l *EnhancedLogger) logTrafficToFile(record *TrafficRecord) error {
 
 	switch l.config.OutputFormat {
 	case config.FormatJSON:
-		return l.logTrafficAsJSON(record)
+		return l.logTrafficAsJSON(l.recordForStructuredOutput(record))
 	case config.FormatCSV:
 		return l.logTrafficAsCSV(record)
 	case config.FormatText:
 		return l.logTrafficAsText(record)
 	case config.FormatHAR:
-		return l.logTrafficAsHAR(record)
+		return l.logTrafficAsHAR(l.recordForStructuredOutput(record))
 	}
 	return nil
 }
@@ -628,6 +628,32 @@ func bodyWithCaptureNotice(body string, truncated bool) string {
 		return "[body truncated at capture limit]"
 	}
 	return body + "\n[body truncated at capture limit]"
+}
+
+func (l *EnhancedLogger) recordForStructuredOutput(record *TrafficRecord) *TrafficRecord {
+	if record == nil {
+		return nil
+	}
+
+	cloned := *record
+	cloned.Request = record.Request
+	cloned.Response = record.Response
+	cloned.Request.Headers = cloneHeaderMap(record.Request.Headers)
+	cloned.Response.Headers = cloneHeaderMap(record.Response.Headers)
+	cloned.Request.Body = bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
+	cloned.Response.Body = bodyWithCaptureNotice(l.limitLoggedBody(record.Response.Body), record.Response.BodyTruncated)
+	return &cloned
+}
+
+func cloneHeaderMap(headers map[string][]string) map[string][]string {
+	if headers == nil {
+		return nil
+	}
+	cloned := make(map[string][]string, len(headers))
+	for name, values := range headers {
+		cloned[name] = append([]string(nil), values...)
+	}
+	return cloned
 }
 
 // generateSessionID generates a unique session ID for this run
