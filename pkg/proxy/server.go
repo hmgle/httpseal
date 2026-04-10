@@ -268,8 +268,8 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 			}
 			s.logger.Error("Failed to forward request to %s: %v", realDomain, err)
-			// Optionally, write a 502 Bad Gateway response to the client
-			return
+			s.writeProxyErrorResponse(conn, req, http.StatusBadGateway, "Failed to reach upstream server.", err)
+			break
 		}
 
 		// Spool the response body to disk and capture only the configured prefix.
@@ -279,7 +279,8 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 			}
 			s.logger.Error("Failed to spool response body: %v", err)
-			return
+			s.writeProxyErrorResponse(conn, req, http.StatusBadGateway, "Failed to capture upstream response.", err)
+			break
 		}
 
 		resp.Body = responseBody.Reader()
@@ -324,6 +325,34 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			s.logger.Debug("Closing connection as requested by headers.")
 			break
 		}
+	}
+}
+
+func (s *Server) writeProxyErrorResponse(conn net.Conn, req *http.Request, statusCode int, message string, cause error) {
+	body := message
+	if cause != nil && (s.config.Verbose || s.config.ExtraVerbose) {
+		body = fmt.Sprintf("%s\n\n%s", message, cause.Error())
+	}
+	body += "\n"
+
+	resp := &http.Response{
+		StatusCode:    statusCode,
+		Status:        fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+		Request:       req,
+	}
+	resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.Header.Set("Connection", "close")
+
+	if err := resp.Write(conn); err != nil {
+		s.logger.Error("Failed to write proxy error response: %v", err)
 	}
 }
 

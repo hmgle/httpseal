@@ -272,3 +272,56 @@ func TestHandleHTTPRequestsOnlyEmitTrafficViaTrafficLogger(t *testing.T) {
 		t.Fatalf("expected no error logs, got %d", log.errorCount)
 	}
 }
+
+func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
+	cfg := &config.Config{ConnectionTimeout: 1}
+	server := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("dial tcp 203.0.113.10:443: connect: connection refused")
+		}),
+	}
+	server.httpClient = client
+	server.socks5Client = client
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "http")
+		close(done)
+	}()
+
+	request := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 response, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Failed to reach upstream server.") {
+		t.Fatalf("unexpected error body: %q", string(body))
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after writing 502 response")
+	}
+}
