@@ -65,14 +65,17 @@ type Server struct {
 	upstreamDNS string       // Upstream DNS server for non-hijacked queries
 }
 
-// NewServer creates a new DNS server
-func NewServer(ip string, port int, log logger.Logger) *Server {
+// NewServer creates a new DNS server.
+func NewServer(ip string, port int, upstreamDNS string, log logger.Logger) *Server {
+	if upstreamDNS == "" {
+		upstreamDNS = "8.8.8.8:53"
+	}
 	return &Server{
 		ip:          ip,
 		port:        port,
 		logger:      log,
 		ipGen:       NewLoopbackGen(),
-		upstreamDNS: "8.8.8.8:53", // Default to Google DNS, can be made configurable
+		upstreamDNS: upstreamDNS,
 	}
 }
 

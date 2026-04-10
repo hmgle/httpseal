@@ -3,6 +3,7 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -179,32 +180,13 @@ func NewHAR() *HAR {
 
 // ConvertTrafficRecordToHAREntry converts a TrafficRecord to a HAR entry
 func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
-	// Convert headers from map to HAR format
-	requestHeaders := make([]HARNameValue, 0, len(record.Request.Headers))
-	for name, value := range record.Request.Headers {
-		requestHeaders = append(requestHeaders, HARNameValue{
-			Name:  name,
-			Value: value,
-		})
-	}
-
-	responseHeaders := make([]HARNameValue, 0, len(record.Response.Headers))
-	for name, value := range record.Response.Headers {
-		responseHeaders = append(responseHeaders, HARNameValue{
-			Name:  name,
-			Value: value,
-		})
-	}
-
-	// Parse query string from URL
-	queryString := []HARNameValue{}
-	// Note: For simplicity, we're not parsing URL query parameters here
-	// This could be enhanced to parse the URL and extract query parameters
+	requestHeaders := flattenHeaders(record.Request.Headers)
+	responseHeaders := flattenHeaders(record.Response.Headers)
 
 	// Handle POST data
 	var postData *HARPostData
-	if record.Request.Method == "POST" && record.Request.Body != "" {
-		contentType := record.Request.Headers["Content-Type"]
+	if record.Request.Body != "" {
+		contentType := firstHeaderValue(record.Request.Headers, "Content-Type")
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
@@ -217,12 +199,13 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 	}
 
 	// Build absolute URL for HAR compliance
-	absoluteURL := buildAbsoluteURL(record.Domain, record.Request.URL, record.Request.Headers)
+	absoluteURL := buildAbsoluteURL(record.Scheme, record.Domain, record.Request.URL)
+	queryString := parseQueryString(absoluteURL)
 
 	// Create HAR entry
 	entry := HAREntry{
 		StartedDateTime: record.Timestamp,
-		Time:            float64(record.Duration.Milliseconds()),
+		Time:            float64(record.DurationMs),
 		Request: HARRequest{
 			Method:      record.Request.Method,
 			URL:         absoluteURL,
@@ -260,7 +243,7 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 			DNS:     -1, // Not applicable for intercepted traffic
 			Connect: -1, // Not applicable for intercepted traffic
 			Send:    0,  // Not measured separately, using 0
-			Wait:    int(record.Duration.Milliseconds()),
+			Wait:    int(record.DurationMs),
 			Receive: 0, // Not measured separately, using 0
 		},
 		ServerIPAddress: "", // Could be populated if available
@@ -272,21 +255,34 @@ func ConvertTrafficRecordToHAREntry(record *TrafficRecord) HAREntry {
 
 // Helper functions
 
-// buildAbsoluteURL constructs an absolute URL from domain and request URL
-func buildAbsoluteURL(domain, requestURL string, headers map[string]string) string {
+func flattenHeaders(headers map[string][]string) []HARNameValue {
+	count := 0
+	for _, values := range headers {
+		count += len(values)
+	}
+
+	flattened := make([]HARNameValue, 0, count)
+	for name, values := range headers {
+		for _, value := range values {
+			flattened = append(flattened, HARNameValue{
+				Name:  name,
+				Value: value,
+			})
+		}
+	}
+
+	return flattened
+}
+
+// buildAbsoluteURL constructs an absolute URL from domain and request URL.
+func buildAbsoluteURL(scheme, domain, requestURL string) string {
 	// If the requestURL is already absolute, return it as-is
 	if strings.HasPrefix(requestURL, "http://") || strings.HasPrefix(requestURL, "https://") {
 		return requestURL
 	}
 
-	// Determine scheme based on context or headers
-	scheme := "https" // Default to HTTPS for HTTPSeal
-
-	// Check if we can determine the scheme from headers or other context
-	// For HTTPSeal, we primarily intercept HTTPS traffic
-	if headers != nil {
-		// We could check for specific headers that indicate HTTP vs HTTPS
-		// But for HTTPSeal's use case, HTTPS is the primary protocol
+	if scheme == "" {
+		scheme = "https"
 	}
 
 	// Ensure requestURL starts with /
@@ -296,6 +292,25 @@ func buildAbsoluteURL(domain, requestURL string, headers map[string]string) stri
 
 	// Construct the absolute URL
 	return fmt.Sprintf("%s://%s%s", scheme, domain, requestURL)
+}
+
+func parseQueryString(absoluteURL string) []HARNameValue {
+	parsedURL, err := url.Parse(absoluteURL)
+	if err != nil {
+		return []HARNameValue{}
+	}
+
+	queryString := []HARNameValue{}
+	for name, values := range parsedURL.Query() {
+		for _, value := range values {
+			queryString = append(queryString, HARNameValue{
+				Name:  name,
+				Value: value,
+			})
+		}
+	}
+
+	return queryString
 }
 
 // convertProtoToVersion converts HTTP protocol string to version
@@ -322,24 +337,26 @@ func extractStatusText(status string) string {
 }
 
 // calculateHeadersSize estimates headers size (rough calculation)
-func calculateHeadersSize(headers map[string]string) int {
+func calculateHeadersSize(headers map[string][]string) int {
 	size := 0
-	for name, value := range headers {
-		size += len(name) + len(value) + 4 // name: value\r\n
+	for name, values := range headers {
+		for _, value := range values {
+			size += len(name) + len(value) + 4 // name: value\r\n
+		}
 	}
 	return size
 }
 
 // calculateCompressionSavings calculates compression savings for HAR format
-func calculateCompressionSavings(headers map[string]string, decompressedBody string) int {
-	contentEncoding := headers["Content-Encoding"]
+func calculateCompressionSavings(headers map[string][]string, decompressedBody string) int {
+	contentEncoding := firstHeaderValue(headers, "Content-Encoding")
 	if contentEncoding == "" {
 		return 0
 	}
 
 	// If the body was successfully decompressed, we can estimate the compression savings
 	// by comparing the original size (from headers) with the decompressed size
-	contentLength := headers["Content-Length"]
+	contentLength := firstHeaderValue(headers, "Content-Length")
 	if contentLength != "" {
 		if originalSize, err := strconv.Atoi(contentLength); err == nil {
 			decompressedSize := len(decompressedBody)
@@ -369,4 +386,3 @@ func determineContentEncoding(body string) string {
 func (h *HAR) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(h, "", "  ")
 }
-

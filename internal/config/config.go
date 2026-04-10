@@ -34,6 +34,7 @@ type Config struct {
 	ExtraVerbose bool // Extra verbose mode (-vv)
 	DNSIP        string
 	DNSPort      int
+	UpstreamDNS  string
 	ProxyPort    int
 	CADir        string
 	KeepCA       bool // Keep CA directory after exit
@@ -46,10 +47,15 @@ type Config struct {
 	ConnectionTimeout int // Client connection idle timeout in seconds (default 30)
 
 	// SOCKS5 proxy settings
-	SOCKS5Enabled  bool   // Enable SOCKS5 proxy for upstream connections
-	SOCKS5Address  string // SOCKS5 proxy address (e.g., "127.0.0.1:1080")
-	SOCKS5Username string // SOCKS5 username (optional)
-	SOCKS5Password string // SOCKS5 password (optional)
+	SOCKS5Enabled              bool   // Enable SOCKS5 proxy for upstream connections
+	SOCKS5Address              string // SOCKS5 proxy address (e.g., "127.0.0.1:1080")
+	SOCKS5Username             string // SOCKS5 username (optional)
+	SOCKS5Password             string // SOCKS5 password (optional)
+	UpstreamCAFile             string // Additional CA bundle used when TLS to the upstream is verified
+	UpstreamClientCert         string // Client certificate used for upstream mTLS
+	UpstreamClientKey          string // Client private key used for upstream mTLS
+	UpstreamServerName         string // Optional SNI/hostname override for upstream TLS
+	UpstreamInsecureSkipVerify bool   // Skip upstream certificate verification
 
 	// Command execution
 	Command     string
@@ -62,8 +68,15 @@ type Config struct {
 	FileLogLevel        LogLevel     // File traffic logging verbosity (can be different from console)
 	LogFile             string       // File to save system logs (separate from traffic)
 	Quiet               bool         // Suppress console output
-	MaxBodySize         int          // Maximum body size to log (bytes), 0 = unlimited
+	NoRedact            bool         // Disable default redaction of sensitive traffic fields
+	CaptureBodyLimit    int          // Maximum body bytes to capture per message, 0 = unlimited
+	LogBodyLimit        int          // Maximum captured body bytes to print/write, 0 = full captured body
 	FilterDomains       []string     // Only log these domains (empty = all)
+	FilterHostExact     []string     // Only log exact host matches (empty = all)
+	FilterHostSuffix    []string     // Only log host suffix matches (empty = all)
+	FilterMethods       []string     // Only log these HTTP methods (empty = all)
+	FilterStatusCodes   []int        // Only log these HTTP status codes (empty = all)
+	FilterPaths         []string     // Only log when request path contains one of these strings (empty = all)
 	ExcludeContentTypes []string     // Exclude these content types
 	DecompressResponse  bool         // Decompress compressed response bodies for logging (default: true)
 
@@ -79,6 +92,7 @@ type FileConfig struct {
 	ExtraVerbose *bool   `json:"extra_verbose,omitempty"`
 	DNSIP        *string `json:"dns_ip,omitempty"`
 	DNSPort      *int    `json:"dns_port,omitempty"`
+	UpstreamDNS  *string `json:"upstream_dns,omitempty"`
 	ProxyPort    *int    `json:"proxy_port,omitempty"`
 	CADir        *string `json:"ca_dir,omitempty"`
 	KeepCA       *bool   `json:"keep_ca,omitempty"`
@@ -91,10 +105,15 @@ type FileConfig struct {
 	ConnectionTimeout *int `json:"connection_timeout,omitempty"`
 
 	// SOCKS5 proxy settings
-	SOCKS5Enabled  *bool   `json:"socks5_enabled,omitempty"`
-	SOCKS5Address  *string `json:"socks5_address,omitempty"`
-	SOCKS5Username *string `json:"socks5_username,omitempty"`
-	SOCKS5Password *string `json:"socks5_password,omitempty"`
+	SOCKS5Enabled              *bool   `json:"socks5_enabled,omitempty"`
+	SOCKS5Address              *string `json:"socks5_address,omitempty"`
+	SOCKS5Username             *string `json:"socks5_username,omitempty"`
+	SOCKS5Password             *string `json:"socks5_password,omitempty"`
+	UpstreamCAFile             *string `json:"upstream_ca_file,omitempty"`
+	UpstreamClientCert         *string `json:"upstream_client_cert,omitempty"`
+	UpstreamClientKey          *string `json:"upstream_client_key,omitempty"`
+	UpstreamServerName         *string `json:"upstream_server_name,omitempty"`
+	UpstreamInsecureSkipVerify *bool   `json:"upstream_insecure_skip_verify,omitempty"`
 
 	// Traffic logging and output
 	OutputFile          *string   `json:"output_file,omitempty"`
@@ -103,8 +122,16 @@ type FileConfig struct {
 	FileLogLevel        *string   `json:"file_log_level,omitempty"`
 	LogFile             *string   `json:"log_file,omitempty"`
 	Quiet               *bool     `json:"quiet,omitempty"`
-	MaxBodySize         *int      `json:"max_body_size,omitempty"`
+	NoRedact            *bool     `json:"no_redact,omitempty"`
+	CaptureBodyLimit    *int      `json:"capture_body_limit,omitempty"`
+	LogBodyLimit        *int      `json:"log_body_limit,omitempty"`
+	MaxBodySize         *int      `json:"max_body_size,omitempty"` // Deprecated alias for log_body_limit
 	FilterDomains       *[]string `json:"filter_domains,omitempty"`
+	FilterHostExact     *[]string `json:"filter_host_exact,omitempty"`
+	FilterHostSuffix    *[]string `json:"filter_host_suffix,omitempty"`
+	FilterMethods       *[]string `json:"filter_methods,omitempty"`
+	FilterStatusCodes   *[]int    `json:"filter_status_codes,omitempty"`
+	FilterPaths         *[]string `json:"filter_paths,omitempty"`
 	ExcludeContentTypes *[]string `json:"exclude_content_types,omitempty"`
 	DecompressResponse  *bool     `json:"decompress_response,omitempty"`
 
@@ -187,12 +214,18 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 			*dst = append([]string(nil), (*src)...)
 		}
 	}
+	applyIntSlice := func(flagName string, src *[]int, dst *[]int) {
+		if src != nil && !isFlagChanged(flagName) {
+			*dst = append([]int(nil), (*src)...)
+		}
+	}
 
 	// Network settings
 	applyBool("verbose", fileConfig.Verbose, &c.Verbose)
 	applyBool("verbose", fileConfig.ExtraVerbose, &c.ExtraVerbose)
 	applyString("dns-ip", fileConfig.DNSIP, &c.DNSIP)
 	applyInt("dns-port", fileConfig.DNSPort, &c.DNSPort)
+	applyString("upstream-dns", fileConfig.UpstreamDNS, &c.UpstreamDNS)
 	applyInt("proxy-port", fileConfig.ProxyPort, &c.ProxyPort)
 	applyString("ca-dir", fileConfig.CADir, &c.CADir)
 	applyBool("keep-ca", fileConfig.KeepCA, &c.KeepCA)
@@ -209,6 +242,11 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	applyString("socks5-addr", fileConfig.SOCKS5Address, &c.SOCKS5Address)
 	applyString("socks5-user", fileConfig.SOCKS5Username, &c.SOCKS5Username)
 	applyString("socks5-pass", fileConfig.SOCKS5Password, &c.SOCKS5Password)
+	applyString("upstream-ca-file", fileConfig.UpstreamCAFile, &c.UpstreamCAFile)
+	applyString("upstream-client-cert", fileConfig.UpstreamClientCert, &c.UpstreamClientCert)
+	applyString("upstream-client-key", fileConfig.UpstreamClientKey, &c.UpstreamClientKey)
+	applyString("upstream-server-name", fileConfig.UpstreamServerName, &c.UpstreamServerName)
+	applyBool("upstream-insecure-skip-verify", fileConfig.UpstreamInsecureSkipVerify, &c.UpstreamInsecureSkipVerify)
 
 	// Traffic logging and output
 	applyString("output", fileConfig.OutputFile, &c.OutputFile)
@@ -223,8 +261,19 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	}
 	applyString("log-file", fileConfig.LogFile, &c.LogFile)
 	applyBool("quiet", fileConfig.Quiet, &c.Quiet)
-	applyInt("max-body-size", fileConfig.MaxBodySize, &c.MaxBodySize)
+	applyBool("no-redact", fileConfig.NoRedact, &c.NoRedact)
+	applyInt("capture-body-limit", fileConfig.CaptureBodyLimit, &c.CaptureBodyLimit)
+	if fileConfig.LogBodyLimit != nil && !isFlagChanged("log-body-limit") && !isFlagChanged("max-body-size") {
+		c.LogBodyLimit = *fileConfig.LogBodyLimit
+	} else {
+		applyInt("max-body-size", fileConfig.MaxBodySize, &c.LogBodyLimit)
+	}
 	applyStringSlice("filter-domain", fileConfig.FilterDomains, &c.FilterDomains)
+	applyStringSlice("filter-host-exact", fileConfig.FilterHostExact, &c.FilterHostExact)
+	applyStringSlice("filter-host-suffix", fileConfig.FilterHostSuffix, &c.FilterHostSuffix)
+	applyStringSlice("filter-method", fileConfig.FilterMethods, &c.FilterMethods)
+	applyIntSlice("filter-status", fileConfig.FilterStatusCodes, &c.FilterStatusCodes)
+	applyStringSlice("filter-path", fileConfig.FilterPaths, &c.FilterPaths)
 	applyStringSlice(
 		"exclude-content-type",
 		fileConfig.ExcludeContentTypes,

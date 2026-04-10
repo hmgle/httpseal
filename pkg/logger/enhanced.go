@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -177,6 +178,26 @@ func (l *EnhancedLogger) shouldLogTraffic(record *TrafficRecord) bool {
 		}
 	}
 
+	if len(l.config.FilterHostExact) > 0 && !matchesExactHost(record.Domain, l.config.FilterHostExact) {
+		return false
+	}
+
+	if len(l.config.FilterHostSuffix) > 0 && !matchesHostSuffix(record.Domain, l.config.FilterHostSuffix) {
+		return false
+	}
+
+	if len(l.config.FilterMethods) > 0 && !matchesMethod(record.Request.Method, l.config.FilterMethods) {
+		return false
+	}
+
+	if len(l.config.FilterStatusCodes) > 0 && !matchesStatusCode(record.Response.StatusCode, l.config.FilterStatusCodes) {
+		return false
+	}
+
+	if len(l.config.FilterPaths) > 0 && !matchesPath(record.Request.URL, l.config.FilterPaths) {
+		return false
+	}
+
 	// Check content type exclusion
 	contentType := strings.ToLower(record.Response.ContentType)
 	for _, excludeType := range l.config.ExcludeContentTypes {
@@ -204,7 +225,7 @@ func (l *EnhancedLogger) logTrafficToConsole(record *TrafficRecord) {
 		l.Info(">> Request to %s", record.Domain)
 		l.Info("%s %s %s", record.Request.Method, record.Request.URL, record.Request.Proto)
 		l.Info("Host: %s", record.Request.Host)
-		l.Info("User-Agent: %s", record.Request.Headers["User-Agent"])
+		l.Info("User-Agent: %s", firstHeaderValue(record.Request.Headers, "User-Agent"))
 		l.Info("")
 		l.Info("<< Response from %s", record.Domain)
 		l.Info("%s %s", record.Response.Proto, record.Response.Status)
@@ -225,22 +246,21 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 	l.Info("Host: %s", record.Request.Host)
 
 	// Log request headers
-	for name, value := range record.Request.Headers {
-		if name == "Host" {
-			l.Info("%s: %s", name, value)
-		} else {
-			l.Debug("%s: %s", name, value)
+	for name, values := range record.Request.Headers {
+		for _, value := range values {
+			if name == "Host" {
+				l.Info("%s: %s", name, value)
+			} else {
+				l.Debug("%s: %s", name, value)
+			}
 		}
 	}
 
 	// Log request body if present (with size limit)
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := l.limitLoggedBody(record.Request.Body)
 		l.Info("Request body (%d bytes):", record.Request.BodySize)
-		l.Info("%s", body)
+		l.Info("%s", bodyWithCaptureNotice(body, record.Request.BodyTruncated))
 	}
 
 	l.Info("")
@@ -249,18 +269,20 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 	l.Info("%s %s", record.Response.Proto, record.Response.Status)
 
 	// Log response headers
-	for name, value := range record.Response.Headers {
-		if name == "Content-Type" || name == "Content-Length" {
-			l.Info("%s: %s", name, value)
-		} else {
-			l.Debug("%s: %s", name, value)
+	for name, values := range record.Response.Headers {
+		for _, value := range values {
+			if name == "Content-Type" || name == "Content-Length" {
+				l.Info("%s: %s", name, value)
+			} else {
+				l.Debug("%s: %s", name, value)
+			}
 		}
 	}
 
 	// Log response body if present (with size limit and content type filtering)
 	if record.Response.Body != "" {
 		contentType := strings.ToLower(record.Response.ContentType)
-		contentEncoding := record.Response.Headers["Content-Encoding"]
+		contentEncoding := firstHeaderValue(record.Response.Headers, "Content-Encoding")
 
 		// Check if content should be logged based on type
 		isTextContent := strings.Contains(contentType, "text/") ||
@@ -272,10 +294,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 		// In extra-verbose mode (forceAllBodies=true), show all content
 		// In normal verbose mode, only show text content
 		if forceAllBodies || isTextContent || contentType == "" {
-			body := record.Response.Body
-			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-				body = body[:l.config.MaxBodySize] + "... (truncated)"
-			}
+			body := l.limitLoggedBody(record.Response.Body)
 
 			// Indicate if content was decompressed
 			bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
@@ -291,9 +310,9 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 
 			if forceAllBodies && !isTextContent && contentType != "" {
 				// For binary content in extra-verbose mode, show hex representation
-				l.Info("%s [binary content - first 200 chars as hex: %x]", body, []byte(body)[:min(200, len(body))])
+				l.Info("%s [binary content - first 200 chars as hex: %x]", bodyWithCaptureNotice(body, record.Response.BodyTruncated), []byte(body)[:min(200, len(body))])
 			} else {
-				l.Info("%s", body)
+				l.Info("%s", bodyWithCaptureNotice(body, record.Response.BodyTruncated))
 			}
 		} else {
 			compressionNote := ""
@@ -316,13 +335,13 @@ func (l *EnhancedLogger) logTrafficToFile(record *TrafficRecord) error {
 
 	switch l.config.OutputFormat {
 	case config.FormatJSON:
-		return l.logTrafficAsJSON(record)
+		return l.logTrafficAsJSON(l.recordForStructuredOutput(record))
 	case config.FormatCSV:
 		return l.logTrafficAsCSV(record)
 	case config.FormatText:
 		return l.logTrafficAsText(record)
 	case config.FormatHAR:
-		return l.logTrafficAsHAR(record)
+		return l.logTrafficAsHAR(l.recordForStructuredOutput(record))
 	}
 	return nil
 }
@@ -351,14 +370,8 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		responseBody = record.Response.Body
 
 		// Apply size limits
-		if l.config.MaxBodySize > 0 {
-			if len(requestBody) > l.config.MaxBodySize {
-				requestBody = requestBody[:l.config.MaxBodySize] + "... (truncated)"
-			}
-			if len(responseBody) > l.config.MaxBodySize {
-				responseBody = responseBody[:l.config.MaxBodySize] + "... (truncated)"
-			}
-		}
+		requestBody = bodyWithCaptureNotice(l.limitLoggedBody(requestBody), record.Request.BodyTruncated)
+		responseBody = bodyWithCaptureNotice(l.limitLoggedBody(responseBody), record.Response.BodyTruncated)
 	}
 
 	row := []string{
@@ -372,7 +385,7 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		record.Response.ContentType,
 		strconv.Itoa(record.Request.BodySize),
 		strconv.Itoa(record.Response.BodySize),
-		strconv.FormatInt(record.Duration.Milliseconds(), 10),
+		strconv.FormatInt(record.DurationMs, 10),
 		string(requestHeaders),
 		string(responseHeaders),
 		requestBody,
@@ -400,7 +413,7 @@ func (l *EnhancedLogger) logTrafficAsText(record *TrafficRecord) error {
 		text = fmt.Sprintf("[%s] >> Request to %s\n%s %s %s\nHost: %s\nUser-Agent: %s\n\n[%s] << Response from %s\n%s %s\nContent-Type: %s\nContent-Length: %d\n\n",
 			record.Timestamp.Format("15:04:05"), record.Domain,
 			record.Request.Method, record.Request.URL, record.Request.Proto,
-			record.Request.Host, record.Request.Headers["User-Agent"],
+			record.Request.Host, firstHeaderValue(record.Request.Headers, "User-Agent"),
 			record.Timestamp.Format("15:04:05"), record.Domain,
 			record.Response.Proto, record.Response.Status,
 			record.Response.ContentType, record.Response.BodySize)
@@ -439,15 +452,14 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 
 	// Request headers
 	for name, value := range record.Request.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Request body
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
 
@@ -459,7 +471,9 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 
 	// Response headers
 	for name, value := range record.Response.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Response body
@@ -474,10 +488,7 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 			strings.Contains(contentType, "application/x-www-form-urlencoded")
 
 		if isTextContent || contentType == "" {
-			body := record.Response.Body
-			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-				body = body[:l.config.MaxBodySize] + "... (truncated)"
-			}
+			body := bodyWithCaptureNotice(l.limitLoggedBody(record.Response.Body), record.Response.BodyTruncated)
 			builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
 		} else {
 			builder.WriteString(fmt.Sprintf("Response body: %d bytes of binary data (%s)\n", record.Response.BodySize, record.Response.ContentType))
@@ -499,15 +510,14 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Request headers
 	for name, value := range record.Request.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Request body (always include for file output in verbose mode)
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
 
@@ -519,19 +529,18 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Response headers
 	for name, value := range record.Response.Headers {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", name, value))
+		for _, headerValue := range value {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", name, headerValue))
+		}
 	}
 
 	// Response body (always include for file output in verbose mode)
 	if record.Response.Body != "" {
-		body := record.Response.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := l.limitLoggedBody(record.Response.Body)
 
 		// Indicate if content was decompressed
 		bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
-		contentEncoding := record.Response.Headers["Content-Encoding"]
+		contentEncoding := firstHeaderValue(record.Response.Headers, "Content-Encoding")
 		if contentEncoding != "" {
 			if strings.HasPrefix(body, "[Compressed ") {
 				bodyDescription += fmt.Sprintf(" [%s - decompression failed]", contentEncoding)
@@ -539,7 +548,7 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 				bodyDescription += fmt.Sprintf(" [decompressed from %s]", contentEncoding)
 			}
 		}
-		builder.WriteString(fmt.Sprintf("%s:\n%s\n", bodyDescription, body))
+		builder.WriteString(fmt.Sprintf("%s:\n%s\n", bodyDescription, bodyWithCaptureNotice(body, record.Response.BodyTruncated)))
 	}
 
 	builder.WriteString("\n")
@@ -604,18 +613,121 @@ func min(a, b int) int {
 	return b
 }
 
+func (l *EnhancedLogger) limitLoggedBody(body string) string {
+	if l.config.LogBodyLimit > 0 && len(body) > l.config.LogBodyLimit {
+		return body[:l.config.LogBodyLimit] + "... (truncated)"
+	}
+	return body
+}
+
+func bodyWithCaptureNotice(body string, truncated bool) string {
+	if !truncated {
+		return body
+	}
+	if body == "" {
+		return "[body truncated at capture limit]"
+	}
+	return body + "\n[body truncated at capture limit]"
+}
+
+func (l *EnhancedLogger) recordForStructuredOutput(record *TrafficRecord) *TrafficRecord {
+	if record == nil {
+		return nil
+	}
+
+	cloned := *record
+	cloned.Request = record.Request
+	cloned.Response = record.Response
+	cloned.Request.Headers = cloneHeaderMap(record.Request.Headers)
+	cloned.Response.Headers = cloneHeaderMap(record.Response.Headers)
+	cloned.Request.Body = bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
+	cloned.Response.Body = bodyWithCaptureNotice(l.limitLoggedBody(record.Response.Body), record.Response.BodyTruncated)
+	return &cloned
+}
+
+func cloneHeaderMap(headers map[string][]string) map[string][]string {
+	if headers == nil {
+		return nil
+	}
+	cloned := make(map[string][]string, len(headers))
+	for name, values := range headers {
+		cloned[name] = append([]string(nil), values...)
+	}
+	return cloned
+}
+
 // generateSessionID generates a unique session ID for this run
 func generateSessionID() string {
 	return fmt.Sprintf("tb_%d", time.Now().Unix())
 }
 
-// HeadersToMap converts http.Header to map[string]string
-func HeadersToMap(headers http.Header) map[string]string {
-	result := make(map[string]string)
+// HeadersToMap converts http.Header to map[string][]string.
+func HeadersToMap(headers http.Header) map[string][]string {
+	result := make(map[string][]string)
 	for name, values := range headers {
 		if len(values) > 0 {
-			result[name] = values[0] // Take first value
+			result[name] = append([]string(nil), values...)
 		}
 	}
 	return result
+}
+
+func firstHeaderValue(headers map[string][]string, name string) string {
+	values := headers[name]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func matchesExactHost(host string, allow []string) bool {
+	host = strings.ToLower(host)
+	for _, candidate := range allow {
+		if host == strings.ToLower(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesHostSuffix(host string, suffixes []string) bool {
+	host = strings.ToLower(host)
+	for _, suffix := range suffixes {
+		suffix = strings.ToLower(strings.TrimPrefix(suffix, "."))
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesMethod(method string, allow []string) bool {
+	for _, candidate := range allow {
+		if strings.EqualFold(method, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesStatusCode(statusCode int, allow []int) bool {
+	for _, candidate := range allow {
+		if statusCode == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesPath(rawURL string, allow []string) bool {
+	path := rawURL
+	if parsed, err := url.Parse(rawURL); err == nil && parsed.Path != "" {
+		path = parsed.Path
+	}
+	for _, candidate := range allow {
+		if strings.Contains(path, candidate) {
+			return true
+		}
+	}
+	return false
 }

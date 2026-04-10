@@ -171,15 +171,36 @@ $XDG_CONFIG_HOME/httpseal/config.json
   "enable_http": true,
   "enable_mirror": true,
   "mirror_port": 8080,
+  "upstream_dns": "1.1.1.1:53",
   "socks5_enabled": true,
   "socks5_address": "127.0.0.1:1080",
+  "upstream_ca_file": "./certs/upstream-ca.pem",
+  "upstream_client_cert": "./certs/client.pem",
+  "upstream_client_key": "./certs/client-key.pem",
+  "upstream_server_name": "api.internal.test",
   "connection_timeout": 60,
-  "max_body_size": 4096,
+  "no_redact": false,
+  "capture_body_limit": 1048576,
+  "log_body_limit": 4096,
   "filter_domains": ["api.github.com", "httpbin.org"],
+  "filter_methods": ["GET"],
+  "filter_status_codes": [200],
+  "filter_paths": ["/users/"],
   "ca_dir": "./my-ca",
   "keep_ca": true
 }
 ```
+
+### 兼容性与语义说明
+
+- JSON / CSV / HAR 现在显式输出 `duration_ms`。
+- JSON 的请求/响应 headers 现在保留多值，格式从单个字符串变成字符串数组。
+- `--filter-domain`、`--filter-host-exact`、`--filter-host-suffix`、`--filter-method`、`--filter-status`、`--filter-path` 同时使用时是 AND 关系。
+- `--capture-body-limit` 限制每条请求/响应被捕获进日志的数据量；小 body 走内存，大 body 会落到专用临时目录。
+- `--log-body-limit` 会限制 text / CSV / JSON / HAR 的写出内容；`--max-body-size` 仍可用，但已是兼容别名。
+- 默认会脱敏敏感 header、URL query 和文本 body；需要原样输出时使用 `--no-redact`。
+- `--upstream-server-name` 会全局作用到所有上游 TLS 连接，只适合单一上游或受控测试场景。
+- Wireshark mirror 会保留原始未脱敏、未裁剪的请求体和响应体，方便对照真实交换。
 
 ## 🌐 SOCKS5 代理支持
 
@@ -242,6 +263,12 @@ SOCKS5 代理支持:
       --socks5-addr string     SOCKS5 代理地址 (自动启用 SOCKS5)
       --socks5-user string     SOCKS5 用户名
       --socks5-pass string     SOCKS5 密码
+      --upstream-dns string    非劫持 DNS 查询转发到的上游 DNS (默认 "8.8.8.8:53")
+      --upstream-ca-file string              用于校验上游 TLS 证书的额外 CA 包
+      --upstream-client-cert string          上游 mTLS 客户端证书 PEM
+      --upstream-client-key string           上游 mTLS 客户端私钥 PEM
+      --upstream-server-name string          全局覆盖所有上游 TLS 连接的 SNI / 主机名校验
+      --upstream-insecure-skip-verify        跳过上游 TLS 证书校验
 
 Wireshark 集成:
       --enable-mirror          启用 HTTP 镜像服务器用于 Wireshark 分析
@@ -250,13 +277,23 @@ Wireshark 集成:
 输出选项:
   -o, --output string          将流量输出到文件
       --format string          输出格式: text, json, csv, har (默认 "text")
-      --log-level string       控制台日志级别: none, minimal, normal, verbose
+      --log-level string       控制台日志级别: none, minimal, normal, verbose, extra-verbose
+      --file-log-level string  文件日志级别: none, minimal, normal, verbose, extra-verbose
+      --log-file string        单独输出系统日志到文件
+      --no-redact              关闭默认敏感信息脱敏
   -q, --quiet                  静默模式 (需要 -o)
   -v, --verbose                启用详细输出 (-v 详细, -vv 超详细)
 
 过滤和限制:
       --filter-domain strings        仅记录这些域的流量
-      --max-body-size int            最大响应主体大小 (字节, 0=无限制)
+      --filter-host-exact strings    仅记录这些精确主机名
+      --filter-host-suffix strings   仅记录匹配这些后缀的主机名
+      --filter-method strings        仅记录这些 HTTP 方法
+      --filter-status ints           仅记录这些 HTTP 状态码
+      --filter-path strings          仅记录路径包含这些片段的流量
+      --capture-body-limit int       每条请求/响应最多捕获多少字节 (默认 1048576)
+      --log-body-limit int           最多打印 / 写出多少已捕获 body 字节 (默认 0)
+      --max-body-size int            `--log-body-limit` 的兼容别名
 
 配置:
   -c, --config string          配置文件路径

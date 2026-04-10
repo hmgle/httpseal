@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -27,6 +28,7 @@ var (
 	extraVerbose bool
 	dnsIP        string
 	dnsPort      int
+	upstreamDNS  string
 	proxyPort    int
 	caDir        string
 	keepCA       bool
@@ -39,10 +41,15 @@ var (
 	connectionTimeout int
 
 	// SOCKS5 proxy settings
-	socks5Enabled  bool
-	socks5Address  string
-	socks5Username string
-	socks5Password string
+	socks5Enabled              bool
+	socks5Address              string
+	socks5Username             string
+	socks5Password             string
+	upstreamCAFile             string
+	upstreamClientCert         string
+	upstreamClientKey          string
+	upstreamServerName         string
+	upstreamInsecureSkipVerify bool
 
 	// Traffic logging and output
 	outputFile          string
@@ -51,8 +58,15 @@ var (
 	fileLogLevel        string
 	logFile             string
 	quiet               bool
-	maxBodySize         int
+	noRedact            bool
+	captureBodyLimit    int
+	logBodyLimit        int
 	filterDomains       []string
+	filterHostExact     []string
+	filterHostSuffix    []string
+	filterMethods       []string
+	filterStatusCodes   []int
+	filterPaths         []string
 	excludeContentTypes []string
 	decompressResponse  bool
 
@@ -98,8 +112,8 @@ Examples:
   # Save system logs to separate file
   httpseal --log-file system.log -o traffic.csv --format csv -- wget https://api.github.com/users/octocat
   
-  # Filter specific domains and limit body size
-  httpseal --filter-domain api.github.com --max-body-size 1024 -- curl https://api.github.com/users/octocat
+  # Filter specific domains and limit logged body size
+  httpseal --filter-domain api.github.com --log-body-limit 1024 -- curl https://api.github.com/users/octocat
   
   # CSV format with complete request/response data
   httpseal -o complete.csv --format csv -- wget https://httpbin.org/json
@@ -137,6 +151,7 @@ Examples:
 
 	rootCmd.Flags().StringVar(&dnsIP, "dns-ip", "127.0.53.1", "DNS server IP address")
 	rootCmd.Flags().IntVar(&dnsPort, "dns-port", 53, "DNS server port")
+	rootCmd.Flags().StringVar(&upstreamDNS, "upstream-dns", "8.8.8.8:53", "Upstream DNS server used for forwarded non-hijacked queries")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 443, "HTTPS proxy port")
 	rootCmd.Flags().StringVar(&caDir, "ca-dir", "", "Certificate authority directory (default: XDG_CONFIG_HOME/httpseal/ca)")
 	rootCmd.Flags().BoolVar(&keepCA, "keep-ca", false, "Keep CA directory after exit (always true for default persistent directory)")
@@ -153,16 +168,29 @@ Examples:
 	rootCmd.Flags().StringVar(&socks5Address, "socks5-addr", "127.0.0.1:1080", "SOCKS5 proxy address (auto-enables SOCKS5 when specified)")
 	rootCmd.Flags().StringVar(&socks5Username, "socks5-user", "", "SOCKS5 username for authentication (optional)")
 	rootCmd.Flags().StringVar(&socks5Password, "socks5-pass", "", "SOCKS5 password for authentication (optional)")
+	rootCmd.Flags().StringVar(&upstreamCAFile, "upstream-ca-file", "", "Additional CA bundle used to verify upstream TLS certificates")
+	rootCmd.Flags().StringVar(&upstreamClientCert, "upstream-client-cert", "", "Client certificate PEM used for upstream mTLS")
+	rootCmd.Flags().StringVar(&upstreamClientKey, "upstream-client-key", "", "Client private key PEM used for upstream mTLS")
+	rootCmd.Flags().StringVar(&upstreamServerName, "upstream-server-name", "", "Globally override the upstream TLS server name (SNI and hostname verification) for all upstream TLS connections")
+	rootCmd.Flags().BoolVar(&upstreamInsecureSkipVerify, "upstream-insecure-skip-verify", false, "Skip upstream TLS certificate verification")
 
 	// Traffic logging and output
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output traffic to file (automatically uses verbose level for complete data)")
 	rootCmd.Flags().StringVar(&outputFormat, "format", "text", "Output format: text, json, csv, har")
-	rootCmd.Flags().StringVar(&logLevel, "log-level", "normal", "Console logging level: none, minimal, normal, verbose")
-	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose")
+	rootCmd.Flags().StringVar(&logLevel, "log-level", "normal", "Console logging level: none, minimal, normal, verbose, extra-verbose")
+	rootCmd.Flags().StringVar(&fileLogLevel, "file-log-level", "", "File logging level (defaults to verbose when -o is used): none, minimal, normal, verbose, extra-verbose")
 	rootCmd.Flags().StringVar(&logFile, "log-file", "", "Output system logs to file (separate from traffic data)")
 	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress console output (quiet mode)")
-	rootCmd.Flags().IntVar(&maxBodySize, "max-body-size", 0, "Maximum response body size to log (bytes, 0=unlimited)")
+	rootCmd.Flags().BoolVar(&noRedact, "no-redact", false, "Disable default redaction of sensitive headers, URLs, and text bodies")
+	rootCmd.Flags().IntVar(&captureBodyLimit, "capture-body-limit", 1024*1024, "Maximum request/response body bytes to capture per message (0=unlimited)")
+	rootCmd.Flags().IntVar(&logBodyLimit, "log-body-limit", 0, "Maximum captured body bytes to print/write (0=full captured body)")
+	rootCmd.Flags().IntVar(&logBodyLimit, "max-body-size", 0, "Deprecated alias for --log-body-limit")
 	rootCmd.Flags().StringSliceVar(&filterDomains, "filter-domain", []string{}, "Only log traffic for these domains (can be repeated)")
+	rootCmd.Flags().StringSliceVar(&filterHostExact, "filter-host-exact", []string{}, "Only log traffic for these exact hosts")
+	rootCmd.Flags().StringSliceVar(&filterHostSuffix, "filter-host-suffix", []string{}, "Only log traffic for hosts matching these suffixes")
+	rootCmd.Flags().StringSliceVar(&filterMethods, "filter-method", []string{}, "Only log traffic for these HTTP methods")
+	rootCmd.Flags().IntSliceVar(&filterStatusCodes, "filter-status", []int{}, "Only log traffic for these HTTP status codes")
+	rootCmd.Flags().StringSliceVar(&filterPaths, "filter-path", []string{}, "Only log traffic whose request path contains one of these strings")
 	rootCmd.Flags().StringSliceVar(&excludeContentTypes, "exclude-content-type", []string{}, "Exclude these content types from logging")
 	rootCmd.Flags().BoolVar(&decompressResponse, "decompress-response", true, "Decompress compressed response bodies for logging")
 
@@ -228,6 +256,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		ExtraVerbose: extraVerbose,
 		DNSIP:        dnsIP,
 		DNSPort:      dnsPort,
+		UpstreamDNS:  upstreamDNS,
 		ProxyPort:    proxyPort,
 		CADir:        caDir, // Will be updated below if temporary
 		KeepCA:       keepCA,
@@ -240,10 +269,15 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		ConnectionTimeout: connectionTimeout,
 
 		// SOCKS5 proxy settings
-		SOCKS5Enabled:  effectiveSocks5Enabled,
-		SOCKS5Address:  socks5Address,
-		SOCKS5Username: socks5Username,
-		SOCKS5Password: socks5Password,
+		SOCKS5Enabled:              effectiveSocks5Enabled,
+		SOCKS5Address:              socks5Address,
+		SOCKS5Username:             socks5Username,
+		SOCKS5Password:             socks5Password,
+		UpstreamCAFile:             upstreamCAFile,
+		UpstreamClientCert:         upstreamClientCert,
+		UpstreamClientKey:          upstreamClientKey,
+		UpstreamServerName:         upstreamServerName,
+		UpstreamInsecureSkipVerify: upstreamInsecureSkipVerify,
 
 		// Command execution
 		Command:     args[0],
@@ -256,8 +290,15 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		FileLogLevel:        config.LogLevel(effectiveFileLogLevel),
 		LogFile:             logFile,
 		Quiet:               quiet,
-		MaxBodySize:         maxBodySize,
+		NoRedact:            noRedact,
+		CaptureBodyLimit:    captureBodyLimit,
+		LogBodyLimit:        logBodyLimit,
 		FilterDomains:       filterDomains,
+		FilterHostExact:     filterHostExact,
+		FilterHostSuffix:    filterHostSuffix,
+		FilterMethods:       filterMethods,
+		FilterStatusCodes:   filterStatusCodes,
+		FilterPaths:         filterPaths,
 		ExcludeContentTypes: excludeContentTypes,
 		DecompressResponse:  decompressResponse,
 
@@ -310,6 +351,9 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	if !cfg.Quiet {
 		log.Info("Starting HTTPSeal v%s", version)
 	}
+	if cfg.UpstreamServerName != "" {
+		log.Warn("--upstream-server-name applies to every upstream TLS connection; use it only when all intercepted TLS traffic targets the same certificate name")
+	}
 
 	// Initialize certificate authority
 	ca, err := cert.NewCA(cfg.CADir, log)
@@ -318,7 +362,7 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize DNS server
-	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, log)
+	dnsServer := dns.NewServer(cfg.DNSIP, cfg.DNSPort, cfg.UpstreamDNS, log)
 
 	// Initialize HTTP mirror server (if enabled)
 	var mirrorServer *mirror.Server
@@ -330,12 +374,18 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize HTTPS proxy
-	proxyServer := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer, cfg)
+	proxyServer, err := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to initialize HTTPS proxy: %w", err)
+	}
 
 	// Initialize HTTP proxy (if enabled)
 	var httpProxyServer *proxy.Server
 	if cfg.EnableHTTP {
-		httpProxyServer = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer, cfg)
+		httpProxyServer, err = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize HTTP proxy: %w", err)
+		}
 		if !cfg.Quiet {
 			log.Info("HTTP proxy enabled on port %d", cfg.HTTPPort)
 		}
@@ -444,32 +494,45 @@ func loadConfigFile(cmd *cobra.Command) error {
 	// Create temporary config to merge file settings
 	tempConfig := &config.Config{
 		// Set CLI values with their current state
-		Verbose:             verbose,
-		ExtraVerbose:        extraVerbose,
-		DNSIP:               dnsIP,
-		DNSPort:             dnsPort,
-		ProxyPort:           proxyPort,
-		CADir:               caDir,
-		KeepCA:              keepCA,
-		EnableHTTP:          enableHTTP,
-		HTTPPort:            httpPort,
-		ConnectionTimeout:   connectionTimeout,
-		SOCKS5Enabled:       socks5Enabled,
-		SOCKS5Address:       socks5Address,
-		SOCKS5Username:      socks5Username,
-		SOCKS5Password:      socks5Password,
-		OutputFile:          outputFile,
-		OutputFormat:        config.OutputFormat(outputFormat),
-		LogLevel:            config.LogLevel(logLevel),
-		FileLogLevel:        config.LogLevel(fileLogLevel),
-		LogFile:             logFile,
-		Quiet:               quiet,
-		MaxBodySize:         maxBodySize,
-		FilterDomains:       filterDomains,
-		ExcludeContentTypes: excludeContentTypes,
-		DecompressResponse:  decompressResponse,
-		EnableMirror:        enableMirror,
-		MirrorPort:          mirrorPort,
+		Verbose:                    verbose,
+		ExtraVerbose:               extraVerbose,
+		DNSIP:                      dnsIP,
+		DNSPort:                    dnsPort,
+		UpstreamDNS:                upstreamDNS,
+		ProxyPort:                  proxyPort,
+		CADir:                      caDir,
+		KeepCA:                     keepCA,
+		EnableHTTP:                 enableHTTP,
+		HTTPPort:                   httpPort,
+		ConnectionTimeout:          connectionTimeout,
+		SOCKS5Enabled:              socks5Enabled,
+		SOCKS5Address:              socks5Address,
+		SOCKS5Username:             socks5Username,
+		SOCKS5Password:             socks5Password,
+		UpstreamCAFile:             upstreamCAFile,
+		UpstreamClientCert:         upstreamClientCert,
+		UpstreamClientKey:          upstreamClientKey,
+		UpstreamServerName:         upstreamServerName,
+		UpstreamInsecureSkipVerify: upstreamInsecureSkipVerify,
+		OutputFile:                 outputFile,
+		OutputFormat:               config.OutputFormat(outputFormat),
+		LogLevel:                   config.LogLevel(logLevel),
+		FileLogLevel:               config.LogLevel(fileLogLevel),
+		LogFile:                    logFile,
+		Quiet:                      quiet,
+		NoRedact:                   noRedact,
+		CaptureBodyLimit:           captureBodyLimit,
+		LogBodyLimit:               logBodyLimit,
+		FilterDomains:              filterDomains,
+		FilterHostExact:            filterHostExact,
+		FilterHostSuffix:           filterHostSuffix,
+		FilterMethods:              filterMethods,
+		FilterStatusCodes:          filterStatusCodes,
+		FilterPaths:                filterPaths,
+		ExcludeContentTypes:        excludeContentTypes,
+		DecompressResponse:         decompressResponse,
+		EnableMirror:               enableMirror,
+		MirrorPort:                 mirrorPort,
 	}
 
 	// Merge file config with CLI config (explicitly changed CLI flags take precedence)
@@ -482,6 +545,7 @@ func loadConfigFile(cmd *cobra.Command) error {
 	extraVerbose = tempConfig.ExtraVerbose
 	dnsIP = tempConfig.DNSIP
 	dnsPort = tempConfig.DNSPort
+	upstreamDNS = tempConfig.UpstreamDNS
 	proxyPort = tempConfig.ProxyPort
 	caDir = tempConfig.CADir
 	keepCA = tempConfig.KeepCA
@@ -492,14 +556,26 @@ func loadConfigFile(cmd *cobra.Command) error {
 	socks5Address = tempConfig.SOCKS5Address
 	socks5Username = tempConfig.SOCKS5Username
 	socks5Password = tempConfig.SOCKS5Password
+	upstreamCAFile = tempConfig.UpstreamCAFile
+	upstreamClientCert = tempConfig.UpstreamClientCert
+	upstreamClientKey = tempConfig.UpstreamClientKey
+	upstreamServerName = tempConfig.UpstreamServerName
+	upstreamInsecureSkipVerify = tempConfig.UpstreamInsecureSkipVerify
 	outputFile = tempConfig.OutputFile
 	outputFormat = string(tempConfig.OutputFormat)
 	logLevel = string(tempConfig.LogLevel)
 	fileLogLevel = string(tempConfig.FileLogLevel)
 	logFile = tempConfig.LogFile
 	quiet = tempConfig.Quiet
-	maxBodySize = tempConfig.MaxBodySize
+	noRedact = tempConfig.NoRedact
+	captureBodyLimit = tempConfig.CaptureBodyLimit
+	logBodyLimit = tempConfig.LogBodyLimit
 	filterDomains = tempConfig.FilterDomains
+	filterHostExact = tempConfig.FilterHostExact
+	filterHostSuffix = tempConfig.FilterHostSuffix
+	filterMethods = tempConfig.FilterMethods
+	filterStatusCodes = tempConfig.FilterStatusCodes
+	filterPaths = tempConfig.FilterPaths
 	excludeContentTypes = tempConfig.ExcludeContentTypes
 	decompressResponse = tempConfig.DecompressResponse
 	enableMirror = tempConfig.EnableMirror
@@ -558,9 +634,23 @@ func validateFlags() error {
 		}
 	}
 
-	// Validate max body size
-	if maxBodySize < 0 {
-		return fmt.Errorf("max-body-size must be >= 0")
+	// Validate body capture and logging limits
+	if captureBodyLimit < 0 {
+		return fmt.Errorf("capture-body-limit must be >= 0")
+	}
+	if logBodyLimit < 0 {
+		return fmt.Errorf("log-body-limit must be >= 0")
+	}
+	if _, _, err := net.SplitHostPort(upstreamDNS); err != nil {
+		return fmt.Errorf("upstream-dns must be in host:port form: %w", err)
+	}
+	for _, statusCode := range filterStatusCodes {
+		if statusCode < 100 || statusCode > 599 {
+			return fmt.Errorf("filter-status must contain valid HTTP status codes (100-599)")
+		}
+	}
+	if (upstreamClientCert == "") != (upstreamClientKey == "") {
+		return fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")
 	}
 
 	// If quiet mode is enabled, require output file

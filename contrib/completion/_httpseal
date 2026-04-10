@@ -18,31 +18,44 @@ _httpseal() {
     'application/octet-stream'
     'application/pdf'
   )
-
   _arguments -C \
     '--ca-dir[Certificate authority directory]:directory:_directories' \
     '(-c --config)'{-c,--config}'[Configuration file path]:file:_files' \
     '--connection-timeout[Client connection idle timeout in seconds]:timeout:(30 60 120 300)' \
     '--dns-ip[DNS server IP address]:ip:(127.0.53.1 127.0.0.1)' \
     '--dns-port[DNS server port]:port:(53 5353)' \
+    '--upstream-dns[Upstream DNS server for forwarded non-hijacked queries]:address:' \
     '--enable-http[Enable HTTP traffic interception]' \
     '--enable-mirror[Enable HTTP mirror server for Wireshark analysis]' \
     '--exclude-content-type[Exclude these content types from logging]:content-type:_values -s , "content types" $common_content_types' \
-    '--file-log-level=[File logging level]:level:(none minimal normal verbose)' \
+    '--file-log-level=[File logging level]:level:(none minimal normal verbose extra-verbose)' \
     '--filter-domain[Only log traffic for these domains]:domain:_hosts' \
+    '--filter-host-exact[Only log traffic for these exact hosts]:domain:_hosts' \
+    '--filter-host-suffix[Only log traffic for hosts matching these suffixes]:domain:' \
+    '--filter-method[Only log traffic for these HTTP methods]:method:(GET POST PUT PATCH DELETE HEAD OPTIONS)' \
+    '--filter-status[Only log traffic for these HTTP status codes]:status:(200 201 204 301 302 400 401 403 404 429 500 502 503)' \
+    '--filter-path[Only log traffic whose request path contains one of these strings]:path:' \
     '--format=[Output format]:format:(text json csv har)' \
     '(-h --help)'{-h,--help}'[Show help]' \
     '--http-port[HTTP proxy port]:port:(80 8080 3128)' \
     '--keep-ca[Keep CA directory after exit]' \
     '--log-file[Output system logs to file]:file:_files' \
-    '--log-level=[Console logging level]:level:(none minimal normal verbose)' \
-    '--max-body-size[Maximum request/response body size to log (bytes, 0=unlimited)]:size:(0 1024 4096 65536 10485760)' \
+    '--log-level=[Console logging level]:level:(none minimal normal verbose extra-verbose)' \
+    '--no-redact[Disable default redaction of sensitive headers, URLs, and text bodies]' \
+    '--capture-body-limit[Maximum request/response body bytes to capture per message]:size:(0 1024 4096 65536 1048576 10485760)' \
+    '--log-body-limit[Maximum captured body bytes to print/write]:size:(0 1024 4096 65536 1048576 10485760)' \
+    '--max-body-size[Deprecated alias for --log-body-limit]:size:(0 1024 4096 65536 1048576 10485760)' \
     '--mirror-port[HTTP mirror server port for Wireshark capture]:port:(8080 9090 8000)' \
     '(-o --output)'{-o,--output}'[Output traffic to file]:file:_files' \
     '--proxy-port[HTTPS proxy port]:port:(443 8443)' \
     '(-q --quiet)'{-q,--quiet}'[Suppress console output (quiet mode)]' \
     '--socks5[Enable SOCKS5 proxy with default address]' \
     '--socks5-addr[SOCKS5 proxy address]:address:(127.0.0.1:1080 127.0.0.1:1081)' \
+    '--upstream-ca-file[Additional CA bundle used to verify upstream TLS certificates]:file:_files' \
+    '--upstream-client-cert[Client certificate PEM used for upstream mTLS]:file:_files' \
+    '--upstream-client-key[Client private key PEM used for upstream mTLS]:file:_files' \
+    '--upstream-server-name[Globally override the upstream TLS server name for all upstream TLS connections]:server-name:' \
+    '--upstream-insecure-skip-verify[Skip upstream TLS certificate verification]' \
     '--socks5-pass[SOCKS5 password for authentication]:password:' \
     '--socks5-user[SOCKS5 username for authentication]:username:' \
     '(-v --verbose)'{-v,--verbose}'[Enable verbose output (-v for verbose, -vv for extra-verbose)]' \
