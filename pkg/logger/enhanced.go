@@ -235,12 +235,9 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 
 	// Log request body if present (with size limit)
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := l.limitLoggedBody(record.Request.Body)
 		l.Info("Request body (%d bytes):", record.Request.BodySize)
-		l.Info("%s", body)
+		l.Info("%s", bodyWithCaptureNotice(body, record.Request.BodyTruncated))
 	}
 
 	l.Info("")
@@ -272,10 +269,7 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 		// In extra-verbose mode (forceAllBodies=true), show all content
 		// In normal verbose mode, only show text content
 		if forceAllBodies || isTextContent || contentType == "" {
-			body := record.Response.Body
-			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-				body = body[:l.config.MaxBodySize] + "... (truncated)"
-			}
+			body := l.limitLoggedBody(record.Response.Body)
 
 			// Indicate if content was decompressed
 			bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
@@ -291,9 +285,9 @@ func (l *EnhancedLogger) logTrafficVerbose(record *TrafficRecord, forceAllBodies
 
 			if forceAllBodies && !isTextContent && contentType != "" {
 				// For binary content in extra-verbose mode, show hex representation
-				l.Info("%s [binary content - first 200 chars as hex: %x]", body, []byte(body)[:min(200, len(body))])
+				l.Info("%s [binary content - first 200 chars as hex: %x]", bodyWithCaptureNotice(body, record.Response.BodyTruncated), []byte(body)[:min(200, len(body))])
 			} else {
-				l.Info("%s", body)
+				l.Info("%s", bodyWithCaptureNotice(body, record.Response.BodyTruncated))
 			}
 		} else {
 			compressionNote := ""
@@ -351,14 +345,8 @@ func (l *EnhancedLogger) logTrafficAsCSV(record *TrafficRecord) error {
 		responseBody = record.Response.Body
 
 		// Apply size limits
-		if l.config.MaxBodySize > 0 {
-			if len(requestBody) > l.config.MaxBodySize {
-				requestBody = requestBody[:l.config.MaxBodySize] + "... (truncated)"
-			}
-			if len(responseBody) > l.config.MaxBodySize {
-				responseBody = responseBody[:l.config.MaxBodySize] + "... (truncated)"
-			}
-		}
+		requestBody = bodyWithCaptureNotice(l.limitLoggedBody(requestBody), record.Request.BodyTruncated)
+		responseBody = bodyWithCaptureNotice(l.limitLoggedBody(responseBody), record.Response.BodyTruncated)
 	}
 
 	row := []string{
@@ -444,10 +432,7 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 
 	// Request body
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
 
@@ -474,10 +459,7 @@ func (l *EnhancedLogger) formatVerboseTrafficText(record *TrafficRecord) string 
 			strings.Contains(contentType, "application/x-www-form-urlencoded")
 
 		if isTextContent || contentType == "" {
-			body := record.Response.Body
-			if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-				body = body[:l.config.MaxBodySize] + "... (truncated)"
-			}
+			body := bodyWithCaptureNotice(l.limitLoggedBody(record.Response.Body), record.Response.BodyTruncated)
 			builder.WriteString(fmt.Sprintf("Response body (%d bytes):\n%s\n", record.Response.BodySize, body))
 		} else {
 			builder.WriteString(fmt.Sprintf("Response body: %d bytes of binary data (%s)\n", record.Response.BodySize, record.Response.ContentType))
@@ -504,10 +486,7 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Request body (always include for file output in verbose mode)
 	if record.Request.Body != "" {
-		body := record.Request.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := bodyWithCaptureNotice(l.limitLoggedBody(record.Request.Body), record.Request.BodyTruncated)
 		builder.WriteString(fmt.Sprintf("Request body (%d bytes):\n%s\n", record.Request.BodySize, body))
 	}
 
@@ -524,10 +503,7 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 
 	// Response body (always include for file output in verbose mode)
 	if record.Response.Body != "" {
-		body := record.Response.Body
-		if l.config.MaxBodySize > 0 && len(body) > l.config.MaxBodySize {
-			body = body[:l.config.MaxBodySize] + "... (truncated)"
-		}
+		body := l.limitLoggedBody(record.Response.Body)
 
 		// Indicate if content was decompressed
 		bodyDescription := fmt.Sprintf("Response body (%d bytes)", record.Response.BodySize)
@@ -539,7 +515,7 @@ func (l *EnhancedLogger) formatVerboseTrafficTextForFile(record *TrafficRecord) 
 				bodyDescription += fmt.Sprintf(" [decompressed from %s]", contentEncoding)
 			}
 		}
-		builder.WriteString(fmt.Sprintf("%s:\n%s\n", bodyDescription, body))
+		builder.WriteString(fmt.Sprintf("%s:\n%s\n", bodyDescription, bodyWithCaptureNotice(body, record.Response.BodyTruncated)))
 	}
 
 	builder.WriteString("\n")
@@ -602,6 +578,23 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (l *EnhancedLogger) limitLoggedBody(body string) string {
+	if l.config.LogBodyLimit > 0 && len(body) > l.config.LogBodyLimit {
+		return body[:l.config.LogBodyLimit] + "... (truncated)"
+	}
+	return body
+}
+
+func bodyWithCaptureNotice(body string, truncated bool) string {
+	if !truncated {
+		return body
+	}
+	if body == "" {
+		return "[body truncated at capture limit]"
+	}
+	return body + "\n[body truncated at capture limit]"
 }
 
 // generateSessionID generates a unique session ID for this run

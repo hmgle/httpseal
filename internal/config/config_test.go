@@ -29,10 +29,41 @@ func TestMergeWithFileConfigHonorsChangedFlags(t *testing.T) {
 	}
 }
 
+func TestMergeWithFileConfigMapsDeprecatedMaxBodySizeToLogBodyLimit(t *testing.T) {
+	cfg := &Config{}
+	fileCfg := &FileConfig{
+		MaxBodySize: intPtr(512),
+	}
+
+	cfg.MergeWithFileConfig(fileCfg, nil)
+
+	if cfg.LogBodyLimit != 512 {
+		t.Fatalf("expected deprecated max_body_size to populate log body limit, got %d", cfg.LogBodyLimit)
+	}
+}
+
+func TestMergeWithFileConfigPrefersExplicitLogBodyLimit(t *testing.T) {
+	cfg := &Config{}
+	fileCfg := &FileConfig{
+		LogBodyLimit: intPtr(2048),
+		MaxBodySize:  intPtr(512),
+	}
+
+	cfg.MergeWithFileConfig(fileCfg, nil)
+
+	if cfg.LogBodyLimit != 2048 {
+		t.Fatalf("expected log_body_limit to win over deprecated max_body_size, got %d", cfg.LogBodyLimit)
+	}
+}
+
 func boolPtr(v bool) *bool {
 	return &v
 }
 
 func stringPtr(v string) *string {
+	return &v
+}
+
+func intPtr(v int) *int {
 	return &v
 }

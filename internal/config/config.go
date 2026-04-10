@@ -62,7 +62,8 @@ type Config struct {
 	FileLogLevel        LogLevel     // File traffic logging verbosity (can be different from console)
 	LogFile             string       // File to save system logs (separate from traffic)
 	Quiet               bool         // Suppress console output
-	MaxBodySize         int          // Maximum body size to log (bytes), 0 = unlimited
+	CaptureBodyLimit    int          // Maximum body bytes to capture per message, 0 = unlimited
+	LogBodyLimit        int          // Maximum captured body bytes to print/write, 0 = full captured body
 	FilterDomains       []string     // Only log these domains (empty = all)
 	ExcludeContentTypes []string     // Exclude these content types
 	DecompressResponse  bool         // Decompress compressed response bodies for logging (default: true)
@@ -103,7 +104,9 @@ type FileConfig struct {
 	FileLogLevel        *string   `json:"file_log_level,omitempty"`
 	LogFile             *string   `json:"log_file,omitempty"`
 	Quiet               *bool     `json:"quiet,omitempty"`
-	MaxBodySize         *int      `json:"max_body_size,omitempty"`
+	CaptureBodyLimit    *int      `json:"capture_body_limit,omitempty"`
+	LogBodyLimit        *int      `json:"log_body_limit,omitempty"`
+	MaxBodySize         *int      `json:"max_body_size,omitempty"` // Deprecated alias for log_body_limit
 	FilterDomains       *[]string `json:"filter_domains,omitempty"`
 	ExcludeContentTypes *[]string `json:"exclude_content_types,omitempty"`
 	DecompressResponse  *bool     `json:"decompress_response,omitempty"`
@@ -223,7 +226,12 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	}
 	applyString("log-file", fileConfig.LogFile, &c.LogFile)
 	applyBool("quiet", fileConfig.Quiet, &c.Quiet)
-	applyInt("max-body-size", fileConfig.MaxBodySize, &c.MaxBodySize)
+	applyInt("capture-body-limit", fileConfig.CaptureBodyLimit, &c.CaptureBodyLimit)
+	if fileConfig.LogBodyLimit != nil && !isFlagChanged("log-body-limit") && !isFlagChanged("max-body-size") {
+		c.LogBodyLimit = *fileConfig.LogBodyLimit
+	} else {
+		applyInt("max-body-size", fileConfig.MaxBodySize, &c.LogBodyLimit)
+	}
 	applyStringSlice("filter-domain", fileConfig.FilterDomains, &c.FilterDomains)
 	applyStringSlice(
 		"exclude-content-type",

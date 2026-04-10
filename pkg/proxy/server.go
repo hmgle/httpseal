@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -252,15 +251,11 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		// Clear read deadline for request processing
 		conn.SetReadDeadline(time.Time{})
 
-		// Read and preserve request body for logging and forwarding
-		var requestBody []byte
-		if req.Body != nil {
-			requestBody, err = io.ReadAll(req.Body)
-			if err != nil {
-				s.logger.Error("Failed to read request body: %v", err)
-				return // Cannot proceed without body
-			}
-			req.Body.Close() // Close original body
+		// Spool the request body to disk and capture only the configured prefix
+		requestBody, err := spoolBody(req.Body, int64(s.config.CaptureBodyLimit))
+		if err != nil {
+			s.logger.Error("Failed to spool request body: %v", err)
+			return
 		}
 
 		// Forward the request to the real server
@@ -269,23 +264,26 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		duration := time.Since(startTime)
 
 		if err != nil {
+			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
+			}
 			s.logger.Error("Failed to forward request to %s: %v", realDomain, err)
 			// Optionally, write a 502 Bad Gateway response to the client
 			return
 		}
 
-		// Capture response and create traffic record
-		bodyBytes, trafficRecord, err := s.captureTrafficAndCreateRecord(req, resp, realDomain, duration, requestBody)
+		// Spool the response body to disk and capture only the configured prefix.
+		responseBody, err := spoolBody(resp.Body, int64(s.config.CaptureBodyLimit))
 		if err != nil {
-			if closeErr := resp.Body.Close(); closeErr != nil {
-				s.logger.Warn("Failed to close upstream response body: %v", closeErr)
+			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 			}
-			s.logger.Error("Failed to capture response: %v", err)
+			s.logger.Error("Failed to spool response body: %v", err)
 			return
 		}
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close upstream response body: %v", closeErr)
-		}
+
+		resp.Body = responseBody.Reader()
+		trafficRecord := s.createTrafficRecord(req, resp, realDomain, duration, requestBody, responseBody)
 
 		// Log the traffic record
 		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
@@ -306,11 +304,18 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 		}
 
 		// Normalize response to HTTP/1.1 to fix HTTP/2 compatibility issues
-		s.normalizeResponseForHTTP11(resp, bodyBytes)
+		s.normalizeResponseForHTTP11(resp, responseBody.size)
 
 		// Write the standardized response back to the client
-		if err := resp.Write(conn); err != nil {
-			s.logger.Error("Failed to write response to client: %v", err)
+		writeErr := resp.Write(conn)
+		if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+			s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
+		}
+		if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+			s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
+		}
+		if writeErr != nil {
+			s.logger.Error("Failed to write response to client: %v", writeErr)
 			break // Break connection on write error
 		}
 
@@ -336,11 +341,10 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 }
 
 // forwardRequest forwards the request to the real server
-func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody []byte, scheme string) (*http.Response, error) {
-	// Create a new request body from the preserved request body bytes
+func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody *bodyCapture, scheme string) (*http.Response, error) {
 	var body io.Reader
-	if len(requestBody) > 0 {
-		body = bytes.NewReader(requestBody)
+	if requestBody != nil {
+		body = requestBody.Reader()
 	}
 
 	// Create a new request to avoid modifying the original
@@ -360,6 +364,9 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	newReq.Host = realDomain
 	newReq.URL.Host = realDomain
 	newReq.URL.Scheme = scheme
+	if requestBody != nil && requestBody.size > 0 {
+		newReq.ContentLength = requestBody.size
+	}
 
 	// Clear RequestURI as it's not allowed in client requests
 	newReq.RequestURI = ""
@@ -376,40 +383,63 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	return client.Do(newReq)
 }
 
-// captureTrafficAndCreateRecord captures the response and creates a traffic record
-func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Response, domain string, duration time.Duration, requestBodyBytes []byte) ([]byte, *logger.TrafficRecord, error) {
-	// Read the response body
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
+// createTrafficRecord converts captured request/response data into a traffic record.
+func (s *Server) createTrafficRecord(req *http.Request, resp *http.Response, domain string, duration time.Duration, requestBodyCapture, responseBodyCapture *bodyCapture) *logger.TrafficRecord {
+	requestBody := ""
+	requestBodySize := 0
+	requestBodyTruncated := false
+	if requestBodyCapture != nil {
+		requestBody = string(requestBodyCapture.captured)
+		requestBodySize = int(requestBodyCapture.size)
+		requestBodyTruncated = requestBodyCapture.truncated
 	}
 
-	// Use pre-read request body
-	requestBody := string(requestBodyBytes)
-	requestBodySize := len(requestBodyBytes)
-
-	// Extract response body content with decompression if needed
-	responseBody := string(bodyBytes)
+	responseBody := ""
 	contentEncoding := resp.Header.Get("Content-Encoding")
+	responseBodySize := 0
+	responseBodyTruncated := false
+	if responseBodyCapture != nil {
+		responseBody = string(responseBodyCapture.captured)
+		responseBodySize = int(responseBodyCapture.size)
+		responseBodyTruncated = responseBodyCapture.truncated
+	}
 
 	// Try to decompress the response body if it's compressed (based on configuration)
 	if contentEncoding != "" && s.config.DecompressResponse {
-		if decompressed, err := logger.DecompressResponse(bodyBytes, contentEncoding); err == nil {
+		if responseBodyTruncated {
+			responseBody = fmt.Sprintf(
+				"[Compressed %s content truncated at capture limit: stored %d of %d bytes]",
+				contentEncoding,
+				len(responseBodyCapture.captured),
+				responseBodySize,
+			)
+		} else if decompressed, err := logger.DecompressResponse(responseBodyCapture.captured, contentEncoding); err == nil {
 			// Successfully decompressed - use decompressed content for display
 			responseBody = string(decompressed)
-			s.logger.Debug("Decompressed %s content: %d -> %d bytes", contentEncoding, len(bodyBytes), len(decompressed))
+			s.logger.Debug("Decompressed %s content: %d -> %d bytes", contentEncoding, len(responseBodyCapture.captured), len(decompressed))
 		} else {
 			// Decompression failed - log the error and use original body
 			s.logger.Debug("Failed to decompress %s content: %v", contentEncoding, err)
 			// For binary/compressed content, show a more helpful message
-			if !logger.IsTextLikeContent(bodyBytes, resp.Header.Get("Content-Type")) {
-				responseBody = fmt.Sprintf("[Compressed %s content - %d bytes - decompression failed: %v]", contentEncoding, len(bodyBytes), err)
+			if !logger.IsTextLikeContent(responseBodyCapture.captured, resp.Header.Get("Content-Type")) {
+				responseBody = fmt.Sprintf(
+					"[Compressed %s content - captured %d of %d bytes - decompression failed: %v]",
+					contentEncoding,
+					len(responseBodyCapture.captured),
+					responseBodySize,
+					err,
+				)
 			}
 		}
 	} else if contentEncoding != "" && !s.config.DecompressResponse {
 		// Decompression is disabled - show a helpful message for compressed content
-		if !logger.IsTextLikeContent(bodyBytes, resp.Header.Get("Content-Type")) {
-			responseBody = fmt.Sprintf("[Compressed %s content - %d bytes - decompression disabled]", contentEncoding, len(bodyBytes))
+		if !logger.IsTextLikeContent(responseBodyCapture.captured, resp.Header.Get("Content-Type")) {
+			responseBody = fmt.Sprintf(
+				"[Compressed %s content - captured %d of %d bytes - decompression disabled]",
+				contentEncoding,
+				len(responseBodyCapture.captured),
+				responseBodySize,
+			)
 		}
 	}
 
@@ -419,38 +449,40 @@ func (s *Server) captureTrafficAndCreateRecord(req *http.Request, resp *http.Res
 		Domain:    domain,
 		Duration:  duration,
 		Request: logger.HTTPRequest{
-			Method:   req.Method,
-			URL:      req.URL.String(),
-			Proto:    req.Proto,
-			Host:     req.Host,
-			Headers:  logger.HeadersToMap(req.Header),
-			Body:     requestBody,
-			BodySize: requestBodySize,
+			Method:        req.Method,
+			URL:           req.URL.String(),
+			Proto:         req.Proto,
+			Host:          req.Host,
+			Headers:       logger.HeadersToMap(req.Header),
+			Body:          requestBody,
+			BodyTruncated: requestBodyTruncated,
+			BodySize:      requestBodySize,
 		},
 		Response: logger.HTTPResponse{
-			Proto:       resp.Proto,
-			Status:      resp.Status,
-			StatusCode:  resp.StatusCode,
-			Headers:     logger.HeadersToMap(resp.Header),
-			Body:        responseBody,
-			BodySize:    len(bodyBytes),
-			ContentType: resp.Header.Get("Content-Type"),
+			Proto:         resp.Proto,
+			Status:        resp.Status,
+			StatusCode:    resp.StatusCode,
+			Headers:       logger.HeadersToMap(resp.Header),
+			Body:          responseBody,
+			BodyTruncated: responseBodyTruncated,
+			BodySize:      responseBodySize,
+			ContentType:   resp.Header.Get("Content-Type"),
 		},
 	}
 
-	return bodyBytes, record, nil
+	return record
 }
 
 // normalizeResponseForHTTP11 standardizes HTTP response to HTTP/1.1 for client compatibility
-func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodyBytes []byte) {
+func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodySize int64) {
 	// Force HTTP/1.1 protocol version to fix HTTP/2 compatibility issues
 	resp.Proto = "HTTP/1.1"
 	resp.ProtoMajor = 1
 	resp.ProtoMinor = 1
 
-	// Set correct Content-Length based on actual captured body
-	resp.ContentLength = int64(len(bodyBytes))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+	// Set correct Content-Length based on the spooled response size
+	resp.ContentLength = bodySize
+	resp.Header.Set("Content-Length", strconv.FormatInt(bodySize, 10))
 
 	// Remove Transfer-Encoding since we have complete body and explicit Content-Length
 	resp.Header.Del("Transfer-Encoding")
@@ -458,8 +490,5 @@ func (s *Server) normalizeResponseForHTTP11(resp *http.Response, bodyBytes []byt
 	// Remove HTTP/2 specific headers that might cause issues
 	resp.Header.Del("Alt-Svc")
 
-	// Replace response body with captured content
-	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-	s.logger.Debug("Normalized response to HTTP/1.1 with Content-Length: %d", len(bodyBytes))
+	s.logger.Debug("Normalized response to HTTP/1.1 with Content-Length: %d", bodySize)
 }
