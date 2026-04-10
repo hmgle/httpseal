@@ -7,11 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hmgle/httpseal/internal/config"
+	"github.com/hmgle/httpseal/pkg/cert"
 	"github.com/hmgle/httpseal/pkg/logger"
 )
 
@@ -86,7 +88,10 @@ func TestHandleHTTPRequestsKeepsHTTP11ConnectionsAlive(t *testing.T) {
 
 	realDomain := strings.TrimPrefix(upstream.URL, "http://")
 	cfg := &config.Config{ConnectionTimeout: 1}
-	server := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	server, err := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
 
 	clientConn, proxyConn := net.Pipe()
 	defer clientConn.Close()
@@ -147,7 +152,10 @@ func TestHandleHTTPRequestsKeepsHTTP11ConnectionsAlive(t *testing.T) {
 
 func TestHandleHTTPRequestsStillWritesResponseWhenUpstreamCloseFails(t *testing.T) {
 	cfg := &config.Config{ConnectionTimeout: 1}
-	server := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	server, err := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -209,7 +217,10 @@ func TestHandleHTTPRequestsStillWritesResponseWhenUpstreamCloseFails(t *testing.
 func TestHandleHTTPRequestsOnlyEmitTrafficViaTrafficLogger(t *testing.T) {
 	cfg := &config.Config{ConnectionTimeout: 1}
 	log := &spyTrafficLogger{}
-	server := NewHTTPServer(80, nil, log, nil, cfg)
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -275,7 +286,10 @@ func TestHandleHTTPRequestsOnlyEmitTrafficViaTrafficLogger(t *testing.T) {
 
 func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
 	cfg := &config.Config{ConnectionTimeout: 1}
-	server := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	server, err := NewHTTPServer(80, nil, noopTrafficLogger{}, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return nil, errors.New("dial tcp 203.0.113.10:443: connect: connection refused")
@@ -323,5 +337,44 @@ func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("proxy did not finish after writing 502 response")
+	}
+}
+
+func TestBuildUpstreamTLSConfigRejectsInvalidCAFile(t *testing.T) {
+	_, err := buildUpstreamTLSConfig(&config.Config{
+		UpstreamCAFile: filepath.Join(t.TempDir(), "missing-ca.pem"),
+	})
+	if err == nil {
+		t.Fatal("expected invalid upstream CA path to fail")
+	}
+}
+
+func TestBuildUpstreamTLSConfigLoadsCustomCAAndTLSOverrides(t *testing.T) {
+	caDir := t.TempDir()
+	ca, err := cert.NewCA(caDir, noopTrafficLogger{})
+	if err != nil {
+		t.Fatalf("new ca: %v", err)
+	}
+	if ca == nil {
+		t.Fatal("expected CA instance")
+	}
+
+	tlsConfig, err := buildUpstreamTLSConfig(&config.Config{
+		UpstreamCAFile:             filepath.Join(caDir, "ca.crt"),
+		UpstreamServerName:         "api.internal.test",
+		UpstreamInsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("build upstream tls config: %v", err)
+	}
+
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("expected custom upstream root CAs to be loaded")
+	}
+	if tlsConfig.ServerName != "api.internal.test" {
+		t.Fatalf("unexpected upstream server name: %q", tlsConfig.ServerName)
+	}
+	if !tlsConfig.InsecureSkipVerify {
+		t.Fatal("expected upstream insecure skip verify to be set")
 	}
 }

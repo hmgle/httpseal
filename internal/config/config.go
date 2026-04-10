@@ -46,10 +46,15 @@ type Config struct {
 	ConnectionTimeout int // Client connection idle timeout in seconds (default 30)
 
 	// SOCKS5 proxy settings
-	SOCKS5Enabled  bool   // Enable SOCKS5 proxy for upstream connections
-	SOCKS5Address  string // SOCKS5 proxy address (e.g., "127.0.0.1:1080")
-	SOCKS5Username string // SOCKS5 username (optional)
-	SOCKS5Password string // SOCKS5 password (optional)
+	SOCKS5Enabled              bool   // Enable SOCKS5 proxy for upstream connections
+	SOCKS5Address              string // SOCKS5 proxy address (e.g., "127.0.0.1:1080")
+	SOCKS5Username             string // SOCKS5 username (optional)
+	SOCKS5Password             string // SOCKS5 password (optional)
+	UpstreamCAFile             string // Additional CA bundle used when TLS to the upstream is verified
+	UpstreamClientCert         string // Client certificate used for upstream mTLS
+	UpstreamClientKey          string // Client private key used for upstream mTLS
+	UpstreamServerName         string // Optional SNI/hostname override for upstream TLS
+	UpstreamInsecureSkipVerify bool   // Skip upstream certificate verification
 
 	// Command execution
 	Command     string
@@ -92,10 +97,15 @@ type FileConfig struct {
 	ConnectionTimeout *int `json:"connection_timeout,omitempty"`
 
 	// SOCKS5 proxy settings
-	SOCKS5Enabled  *bool   `json:"socks5_enabled,omitempty"`
-	SOCKS5Address  *string `json:"socks5_address,omitempty"`
-	SOCKS5Username *string `json:"socks5_username,omitempty"`
-	SOCKS5Password *string `json:"socks5_password,omitempty"`
+	SOCKS5Enabled              *bool   `json:"socks5_enabled,omitempty"`
+	SOCKS5Address              *string `json:"socks5_address,omitempty"`
+	SOCKS5Username             *string `json:"socks5_username,omitempty"`
+	SOCKS5Password             *string `json:"socks5_password,omitempty"`
+	UpstreamCAFile             *string `json:"upstream_ca_file,omitempty"`
+	UpstreamClientCert         *string `json:"upstream_client_cert,omitempty"`
+	UpstreamClientKey          *string `json:"upstream_client_key,omitempty"`
+	UpstreamServerName         *string `json:"upstream_server_name,omitempty"`
+	UpstreamInsecureSkipVerify *bool   `json:"upstream_insecure_skip_verify,omitempty"`
 
 	// Traffic logging and output
 	OutputFile          *string   `json:"output_file,omitempty"`
@@ -212,6 +222,11 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	applyString("socks5-addr", fileConfig.SOCKS5Address, &c.SOCKS5Address)
 	applyString("socks5-user", fileConfig.SOCKS5Username, &c.SOCKS5Username)
 	applyString("socks5-pass", fileConfig.SOCKS5Password, &c.SOCKS5Password)
+	applyString("upstream-ca-file", fileConfig.UpstreamCAFile, &c.UpstreamCAFile)
+	applyString("upstream-client-cert", fileConfig.UpstreamClientCert, &c.UpstreamClientCert)
+	applyString("upstream-client-key", fileConfig.UpstreamClientKey, &c.UpstreamClientKey)
+	applyString("upstream-server-name", fileConfig.UpstreamServerName, &c.UpstreamServerName)
+	applyBool("upstream-insecure-skip-verify", fileConfig.UpstreamInsecureSkipVerify, &c.UpstreamInsecureSkipVerify)
 
 	// Traffic logging and output
 	applyString("output", fileConfig.OutputFile, &c.OutputFile)

@@ -3,10 +3,12 @@ package proxy
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +41,7 @@ type Server struct {
 }
 
 // NewServer creates a new HTTPS proxy server
-func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
+func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) (*Server, error) {
 	s := &Server{
 		port:          port,
 		ca:            ca,
@@ -51,13 +53,20 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 		isHTTPS:       true,
 		config:        cfg,
 	}
-	s.httpClient = createHTTPClient(cfg, false, trafficLogger)
-	s.socks5Client = createHTTPClient(cfg, true, trafficLogger)
-	return s
+	var err error
+	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
+	if err != nil {
+		return nil, err
+	}
+	s.socks5Client, err = createHTTPClient(cfg, true, trafficLogger)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // NewHTTPServer creates a new HTTP proxy server
-func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) *Server {
+func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.TrafficLogger, mirrorServer *mirror.Server, cfg *config.Config) (*Server, error) {
 	s := &Server{
 		port:          port,
 		ca:            nil, // No CA needed for HTTP
@@ -69,13 +78,25 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 		isHTTPS:       false,
 		config:        cfg,
 	}
-	s.httpClient = createHTTPClient(cfg, false, trafficLogger)
-	s.socks5Client = createHTTPClient(cfg, true, trafficLogger)
-	return s
+	var err error
+	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
+	if err != nil {
+		return nil, err
+	}
+	s.socks5Client, err = createHTTPClient(cfg, true, trafficLogger)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // createHTTPClient creates a reusable HTTP client with optional SOCKS5 proxy
-func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) *http.Client {
+func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) (*http.Client, error) {
+	tlsConfig, err := buildUpstreamTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	transport := &http.Transport{
 		// Use the default dialer
 		Proxy: http.ProxyFromEnvironment,
@@ -88,9 +109,7 @@ func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) *ht
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: false, // Always verify server certificate
-		},
+		TLSClientConfig:       tlsConfig,
 	}
 
 	// Configure SOCKS5 proxy if enabled and requested
@@ -119,7 +138,51 @@ func createHTTPClient(cfg *config.Config, useSocks5 bool, log logger.Logger) *ht
 			// Don't follow redirects - return them as-is to maintain transparency
 			return http.ErrUseLastResponse
 		},
+	}, nil
+}
+
+func buildUpstreamTLSConfig(cfg *config.Config) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: cfg.UpstreamInsecureSkipVerify,
 	}
+
+	if cfg.UpstreamServerName != "" {
+		tlsConfig.ServerName = cfg.UpstreamServerName
+	}
+
+	if cfg.UpstreamCAFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("load system certificate pool: %w", err)
+		}
+		if pool == nil {
+			pool = x509.NewCertPool()
+		}
+
+		caPEM, err := os.ReadFile(cfg.UpstreamCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read upstream CA bundle %s: %w", cfg.UpstreamCAFile, err)
+		}
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("append upstream CA bundle %s: no certificates found", cfg.UpstreamCAFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	if cfg.UpstreamClientCert != "" || cfg.UpstreamClientKey != "" {
+		clientCert, err := tls.LoadX509KeyPair(cfg.UpstreamClientCert, cfg.UpstreamClientKey)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load upstream client certificate %s and key %s: %w",
+				cfg.UpstreamClientCert,
+				cfg.UpstreamClientKey,
+				err,
+			)
+		}
+		tlsConfig.Certificates = []tls.Certificate{clientCert}
+	}
+
+	return tlsConfig, nil
 }
 
 // Start starts the HTTPS proxy server

@@ -48,3 +48,35 @@ func TestLoadConfigFileFailsForInvalidDefaultConfig(t *testing.T) {
 		t.Fatalf("expected error to mention config path, got %v", err)
 	}
 }
+
+func TestValidateFlagsRequiresClientCertAndKeyTogether(t *testing.T) {
+	oldOutputFormat := outputFormat
+	oldLogLevel := logLevel
+	oldQuiet := quiet
+	oldOutputFile := outputFile
+	oldCert := upstreamClientCert
+	oldKey := upstreamClientKey
+	t.Cleanup(func() {
+		outputFormat = oldOutputFormat
+		logLevel = oldLogLevel
+		quiet = oldQuiet
+		outputFile = oldOutputFile
+		upstreamClientCert = oldCert
+		upstreamClientKey = oldKey
+	})
+
+	outputFormat = "text"
+	logLevel = "normal"
+	quiet = false
+	outputFile = ""
+	upstreamClientCert = "client.pem"
+	upstreamClientKey = ""
+
+	err := validateFlags()
+	if err == nil {
+		t.Fatal("expected validation to fail when only upstream client cert is set")
+	}
+	if !strings.Contains(err.Error(), "upstream-client-cert and upstream-client-key") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}

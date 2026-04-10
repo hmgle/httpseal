@@ -39,10 +39,15 @@ var (
 	connectionTimeout int
 
 	// SOCKS5 proxy settings
-	socks5Enabled  bool
-	socks5Address  string
-	socks5Username string
-	socks5Password string
+	socks5Enabled              bool
+	socks5Address              string
+	socks5Username             string
+	socks5Password             string
+	upstreamCAFile             string
+	upstreamClientCert         string
+	upstreamClientKey          string
+	upstreamServerName         string
+	upstreamInsecureSkipVerify bool
 
 	// Traffic logging and output
 	outputFile          string
@@ -154,6 +159,11 @@ Examples:
 	rootCmd.Flags().StringVar(&socks5Address, "socks5-addr", "127.0.0.1:1080", "SOCKS5 proxy address (auto-enables SOCKS5 when specified)")
 	rootCmd.Flags().StringVar(&socks5Username, "socks5-user", "", "SOCKS5 username for authentication (optional)")
 	rootCmd.Flags().StringVar(&socks5Password, "socks5-pass", "", "SOCKS5 password for authentication (optional)")
+	rootCmd.Flags().StringVar(&upstreamCAFile, "upstream-ca-file", "", "Additional CA bundle used to verify upstream TLS certificates")
+	rootCmd.Flags().StringVar(&upstreamClientCert, "upstream-client-cert", "", "Client certificate PEM used for upstream mTLS")
+	rootCmd.Flags().StringVar(&upstreamClientKey, "upstream-client-key", "", "Client private key PEM used for upstream mTLS")
+	rootCmd.Flags().StringVar(&upstreamServerName, "upstream-server-name", "", "Override the upstream TLS server name (SNI and hostname verification)")
+	rootCmd.Flags().BoolVar(&upstreamInsecureSkipVerify, "upstream-insecure-skip-verify", false, "Skip upstream TLS certificate verification")
 
 	// Traffic logging and output
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output traffic to file (automatically uses verbose level for complete data)")
@@ -243,10 +253,15 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 		ConnectionTimeout: connectionTimeout,
 
 		// SOCKS5 proxy settings
-		SOCKS5Enabled:  effectiveSocks5Enabled,
-		SOCKS5Address:  socks5Address,
-		SOCKS5Username: socks5Username,
-		SOCKS5Password: socks5Password,
+		SOCKS5Enabled:              effectiveSocks5Enabled,
+		SOCKS5Address:              socks5Address,
+		SOCKS5Username:             socks5Username,
+		SOCKS5Password:             socks5Password,
+		UpstreamCAFile:             upstreamCAFile,
+		UpstreamClientCert:         upstreamClientCert,
+		UpstreamClientKey:          upstreamClientKey,
+		UpstreamServerName:         upstreamServerName,
+		UpstreamInsecureSkipVerify: upstreamInsecureSkipVerify,
 
 		// Command execution
 		Command:     args[0],
@@ -334,12 +349,18 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize HTTPS proxy
-	proxyServer := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer, cfg)
+	proxyServer, err := proxy.NewServer(cfg.ProxyPort, ca, dnsServer, log, mirrorServer, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to initialize HTTPS proxy: %w", err)
+	}
 
 	// Initialize HTTP proxy (if enabled)
 	var httpProxyServer *proxy.Server
 	if cfg.EnableHTTP {
-		httpProxyServer = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer, cfg)
+		httpProxyServer, err = proxy.NewHTTPServer(cfg.HTTPPort, dnsServer, log, mirrorServer, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize HTTP proxy: %w", err)
+		}
 		if !cfg.Quiet {
 			log.Info("HTTP proxy enabled on port %d", cfg.HTTPPort)
 		}
@@ -448,33 +469,38 @@ func loadConfigFile(cmd *cobra.Command) error {
 	// Create temporary config to merge file settings
 	tempConfig := &config.Config{
 		// Set CLI values with their current state
-		Verbose:             verbose,
-		ExtraVerbose:        extraVerbose,
-		DNSIP:               dnsIP,
-		DNSPort:             dnsPort,
-		ProxyPort:           proxyPort,
-		CADir:               caDir,
-		KeepCA:              keepCA,
-		EnableHTTP:          enableHTTP,
-		HTTPPort:            httpPort,
-		ConnectionTimeout:   connectionTimeout,
-		SOCKS5Enabled:       socks5Enabled,
-		SOCKS5Address:       socks5Address,
-		SOCKS5Username:      socks5Username,
-		SOCKS5Password:      socks5Password,
-		OutputFile:          outputFile,
-		OutputFormat:        config.OutputFormat(outputFormat),
-		LogLevel:            config.LogLevel(logLevel),
-		FileLogLevel:        config.LogLevel(fileLogLevel),
-		LogFile:             logFile,
-		Quiet:               quiet,
-		CaptureBodyLimit:    captureBodyLimit,
-		LogBodyLimit:        logBodyLimit,
-		FilterDomains:       filterDomains,
-		ExcludeContentTypes: excludeContentTypes,
-		DecompressResponse:  decompressResponse,
-		EnableMirror:        enableMirror,
-		MirrorPort:          mirrorPort,
+		Verbose:                    verbose,
+		ExtraVerbose:               extraVerbose,
+		DNSIP:                      dnsIP,
+		DNSPort:                    dnsPort,
+		ProxyPort:                  proxyPort,
+		CADir:                      caDir,
+		KeepCA:                     keepCA,
+		EnableHTTP:                 enableHTTP,
+		HTTPPort:                   httpPort,
+		ConnectionTimeout:          connectionTimeout,
+		SOCKS5Enabled:              socks5Enabled,
+		SOCKS5Address:              socks5Address,
+		SOCKS5Username:             socks5Username,
+		SOCKS5Password:             socks5Password,
+		UpstreamCAFile:             upstreamCAFile,
+		UpstreamClientCert:         upstreamClientCert,
+		UpstreamClientKey:          upstreamClientKey,
+		UpstreamServerName:         upstreamServerName,
+		UpstreamInsecureSkipVerify: upstreamInsecureSkipVerify,
+		OutputFile:                 outputFile,
+		OutputFormat:               config.OutputFormat(outputFormat),
+		LogLevel:                   config.LogLevel(logLevel),
+		FileLogLevel:               config.LogLevel(fileLogLevel),
+		LogFile:                    logFile,
+		Quiet:                      quiet,
+		CaptureBodyLimit:           captureBodyLimit,
+		LogBodyLimit:               logBodyLimit,
+		FilterDomains:              filterDomains,
+		ExcludeContentTypes:        excludeContentTypes,
+		DecompressResponse:         decompressResponse,
+		EnableMirror:               enableMirror,
+		MirrorPort:                 mirrorPort,
 	}
 
 	// Merge file config with CLI config (explicitly changed CLI flags take precedence)
@@ -497,6 +523,11 @@ func loadConfigFile(cmd *cobra.Command) error {
 	socks5Address = tempConfig.SOCKS5Address
 	socks5Username = tempConfig.SOCKS5Username
 	socks5Password = tempConfig.SOCKS5Password
+	upstreamCAFile = tempConfig.UpstreamCAFile
+	upstreamClientCert = tempConfig.UpstreamClientCert
+	upstreamClientKey = tempConfig.UpstreamClientKey
+	upstreamServerName = tempConfig.UpstreamServerName
+	upstreamInsecureSkipVerify = tempConfig.UpstreamInsecureSkipVerify
 	outputFile = tempConfig.OutputFile
 	outputFormat = string(tempConfig.OutputFormat)
 	logLevel = string(tempConfig.LogLevel)
@@ -570,6 +601,9 @@ func validateFlags() error {
 	}
 	if logBodyLimit < 0 {
 		return fmt.Errorf("log-body-limit must be >= 0")
+	}
+	if (upstreamClientCert == "") != (upstreamClientKey == "") {
+		return fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")
 	}
 
 	// If quiet mode is enabled, require output file
