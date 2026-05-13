@@ -2,461 +2,393 @@
 
 [English](README.md) | 简体中文
 
-HTTPSeal 是一个 Linux 命令行工具，使用命名空间隔离和 DNS 劫持技术来拦截和分析特定进程的 HTTPS/HTTP 流量。
+HTTPSeal 是一个 Linux 命令行工具，用于拦截并记录由它启动的命令所产生的 HTTP 和 HTTPS 流量。它通过 Linux 命名空间、DNS 重定向、本地代理和动态生成的证书颁发机构，将拦截范围限制在目标进程内，而不是修改系统全局代理或信任设置。
 
 ## 演示
 
 [![asciicast](https://asciinema.org/a/730013.svg)](https://asciinema.org/a/730013)
 
-> **注意**：演示中显示的任何 API 密钥已被删除和失效以确保安全。
-
-## 关于项目名称
-
-**HTTPSeal** 结合了 "HTTP/HTTPS" 和 "Seal"（海豹），这个名字是对传奇网络分析工具 **Wireshark** 🦈 的致敬。当 Wireshark 在整个网络海洋中狩猎时，HTTPSeal 是专门的海洋猎手，专注于隔离进程区域内的 HTTP/HTTPS 流量。
-
-## 核心优势
-
-🎯 **独特的进程隔离**：与全局代理工具（mitmproxy、Burp）不同，HTTPSeal 只影响它启动的进程 - 对系统或其他应用程序零影响
-
-⚡ **零配置**：目标应用无需代理设置或修改 - 只需用 HTTPSeal 运行它们即可自动拦截
-
-🔐 **高级证书管理**：完全自动的 CA 处理，支持 XDG 兼容的持久存储（默认：`$XDG_CONFIG_HOME/httpseal/ca/`）- 证书在会话间重用以获得更好性能
-
-🔧 **Linux 原生架构**：专为 Linux 构建，使用命名空间隔离、用户命名空间和绑定挂载实现最大安全性和效率
-
-🦈 **Wireshark 集成**：HTTP 镜像服务器创建解密 HTTPS 流量的实时明文 HTTP 副本 - 在 Wireshark 中零复杂度分析 TLS 1.3 流量
-
-📊 **多种输出格式**：原生 HAR（HTTP Archive）支持用于浏览器开发工具，以及 JSON、CSV 和文本格式与智能双重日志系统
-
-🌐 **SOCKS5**：内置 SOCKS5 代理支持带身份验证，可绕过网络限制
-
-## 架构
-
-HTTPSeal 结合多种 Linux 技术创建隔离的 HTTPS/HTTP 拦截：
-
-1. **挂载命名空间隔离**：使用带 UID 映射的用户命名空间（`unshare --map-root-user`）实现隔离的文件系统视图
-2. **DNS 劫持**：替换 `/etc/resolv.conf` 将 DNS 查询重定向到本地服务器
-3. **IP 地址映射**：将域名映射到 localhost 地址（127.0.0.0/8 范围）
-4. **HTTPS 代理**：拦截 443 端口流量并执行 MITM 解密
-5. **HTTP 代理**：拦截 80 端口的明文 HTTP 流量（启用时）
-6. **证书颁发机构**：动态生成和缓存目标域的证书（仅 HTTPS）
-7. **自动 CA 集成**：在隔离命名空间中合并 HTTPSeal CA 与系统 CA 包
-8. **环境配置**：设置 SSL/TLS 环境变量以实现无缝证书使用
+> 演示中出现过的凭据均已删除并失效。
 
 ## 系统要求
 
-- **操作系统**：Linux（内核 3.8+ 支持用户命名空间）
-- **Linux 权限**：
-  - `CAP_NET_BIND_SERVICE`：用于绑定特权端口（80、443）
-  - HTTPSeal 使用用户命名空间 UID 映射进行挂载操作（无需 `CAP_SYS_ADMIN`）
+- 启用用户命名空间的 Linux。用户命名空间自 Linux 3.8 起可用，但部分发行版或加固系统可能禁用它。
+- 使用默认特权端口 443 和 80 时，`httpseal` 二进制文件需要 `CAP_NET_BIND_SERVICE`。
+- 建议安装 `uidmap`（提供 `newuidmap` 和 `newgidmap`）。没有它也可以回退运行，但目标进程在命名空间内可能显示为 UID/GID 0。
+
+HTTPSeal 不需要把自己的 CA 安装到系统信任存储中。它会为被启动的进程准备隔离的 CA bundle。
 
 ## 安装
 
 ### 从源码构建
 
 ```bash
-# 克隆仓库
 git clone https://github.com/hmgle/httpseal.git
 cd httpseal
-
-# 构建二进制文件
 make build
-
-# 安装并设置所需权限
 sudo make install
 ```
+
+`make install` 会把二进制文件复制到 `/usr/local/bin/httpseal`，并设置 `cap_net_bind_service`。
 
 ### 手动安装
 
 ```bash
-# 构建
 go build -o httpseal ./cmd/httpseal
-
-# 安装二进制文件
 sudo cp httpseal /usr/local/bin/
-
-# 设置所需权限（仅需要 CAP_NET_BIND_SERVICE）
 sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/httpseal
 ```
 
-## 使用方法
+如果安装到其他路径，请对实际路径设置 capability。
 
-### 基本用法
+## 快速开始
 
-```bash
-# 拦截 HTTPS 流量（默认行为）
-httpseal -- wget https://api.github.com/users/octocat
-
-# 拦截 HTTP 流量（需要 --enable-http 标志）
-httpseal --enable-http -- curl http://httpbin.org/get
-
-# 同时拦截 HTTPS 和 HTTP 流量
-httpseal --enable-http -- curl -v https://httpbin.org/get http://httpbin.org/headers
-```
-
-### 高级用法
+使用 `--` 分隔 HTTPSeal 的参数和要运行的命令。
 
 ```bash
-# 详细模式显示所有流量详细信息
-httpseal -v --enable-http -- curl -v https://httpbin.org/get
+# 拦截 HTTPS 流量。
+httpseal -- curl https://api.github.com/users/octocat
 
-# 超详细模式 - 显示所有响应主体包括二进制内容
+# 显示更多请求和响应细节。
+httpseal -v -- curl https://httpbin.org/get
+
+# 在日志输出中包含响应体，包括二进制 body。
 httpseal -vv -- curl https://httpbin.org/get
 
-# 使用 -vv 作为超详细模式的快捷方式（等同于旧的 -V 标志）
-httpseal -vv -- wget https://baidu.com
+# 同时拦截明文 HTTP。
+httpseal --enable-http -- curl http://httpbin.org/get
 
-# 保存流量到 JSON 格式文件
-httpseal --enable-http -o traffic.json --format json -- wget http://httpbin.org/get
+# 写入结构化流量日志。
+httpseal -o traffic.json --format json -- curl https://httpbin.org/get
+httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
 
-# 以 HAR 格式保存流量用于浏览器开发工具分析
-httpseal -o performance.har --format har -- curl https://api.github.com/users/octocat
+# 过滤要写入日志的流量。
+httpseal --filter-host-suffix github.com --filter-method GET --log-body-limit 2048 -- curl https://api.github.com/users/octocat
 
-# 使用 SOCKS5 代理绕过限制
+# 将拦截到的流量镜像为本地 HTTP，便于 Wireshark 抓取。
+httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+
+# 通过 SOCKS5 发起上游连接。
 httpseal --socks5-addr 127.0.0.1:1080 -- curl https://www.google.com
 
-# 🦈 Wireshark 集成 - 镜像 HTTPS 和 HTTP 流量
-httpseal --enable-http --enable-mirror -- curl https://api.github.com/users/octocat
-
-# 配置文件使用
-httpseal --config ./my-config.json -- curl https://api.github.com/users/octocat
+# 从配置文件加载设置。显式传入的 CLI 参数会覆盖配置文件。
+httpseal --config ./config.json --log-level minimal -- curl https://httpbin.org/get
 ```
 
-## 🌊 Wireshark 集成（HTTP 镜像）
+## 工作原理
 
-HTTPSeal 具有**革命性的 HTTP 镜像服务器**功能，可创建解密 HTTPS 流量和明文 HTTP 流量的实时 HTTP 副本，实现无缝的 Wireshark 分析，无需复杂的 TLS 证书配置。
+1. HTTPSeal 启动本地 DNS、HTTPS 代理，并按需启动 HTTP 代理和 mirror server。
+2. 目标命令在新的命名空间内运行。
+3. 在该命名空间内，HTTPSeal 会把生成的 resolver、hosts、NSS 和 CA bundle 文件 bind mount 到标准系统路径。
+4. 目标命令的 DNS 查询会经过 HTTPSeal 的 DNS server。
+5. 域名会被映射到 loopback 地址，访问 443 或可选的 80 端口时会进入 HTTPSeal 的本地代理。
+6. HTTPS 连接会收到由 HTTPSeal CA 签发的动态证书。目标进程通过隔离的 CA bundle 信任该 CA。
+7. HTTPSeal 将请求转发到真实上游服务器，记录交换内容，并把上游响应返回给目标进程。
 
-### 工作原理
+默认只拦截 HTTPS。需要拦截明文 HTTP 时，使用 `--enable-http`。
 
-```
-客户端 → HTTPSeal (HTTPS 代理) → 真实服务器
-             ↓
-    HTTP 镜像服务器 (localhost:8080)
-             ↓
-        Wireshark 捕获
-```
+## 配置
 
-### Wireshark 快速开始
+如果没有设置 `--config`，HTTPSeal 会读取一个默认 JSON 配置路径。该路径根据环境计算：
 
 ```bash
-# 终端 1：启动 Wireshark 并在环回接口上捕获
-wireshark -i lo -f "tcp port 8080"
-
-# 终端 2：启用镜像运行 HTTPSeal
-httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+$XDG_CONFIG_HOME/httpseal/config.json    # 设置了 XDG_CONFIG_HOME 时
+~/.config/httpseal/config.json           # 否则在 HOME 可用时
+./.httpseal/config.json                  # 最终回退
 ```
 
-## 📋 配置文件支持
-
-HTTPSeal 支持遵循 XDG 基础目录规范的 JSON 配置文件：
-
-### 默认配置位置
+也可以显式指定配置文件：
 
 ```bash
-# XDG 兼容路径（按顺序检查）
-$XDG_CONFIG_HOME/httpseal/config.json
-~/.config/httpseal/config.json
-./.httpseal/config.json  # 备用
+httpseal --config ./config.json -- curl https://httpbin.org/get
 ```
 
-### 配置文件示例
+显式传入的 CLI 参数优先级高于配置文件。
 
 ```json
 {
-  "verbose": true,
-  "output_file": "traffic.har",
-  "output_format": "har",
-  "log_level": "normal",
-  "file_log_level": "verbose",
+  "verbose": false,
+  "extra_verbose": false,
+  "dns_ip": "127.0.53.1",
+  "dns_port": 53,
+  "upstream_dns": "8.8.8.8:53",
+  "proxy_port": 443,
+  "ca_dir": "",
+  "keep_ca": false,
   "enable_http": true,
-  "enable_mirror": true,
-  "mirror_port": 8080,
-  "upstream_dns": "1.1.1.1:53",
-  "socks5_enabled": true,
+  "http_port": 80,
+  "connection_timeout": 30,
+  "socks5_enabled": false,
   "socks5_address": "127.0.0.1:1080",
-  "upstream_ca_file": "./certs/upstream-ca.pem",
-  "upstream_client_cert": "./certs/client.pem",
-  "upstream_client_key": "./certs/client-key.pem",
-  "upstream_server_name": "api.internal.test",
-  "connection_timeout": 60,
+  "socks5_username": "",
+  "socks5_password": "",
+  "upstream_ca_file": "",
+  "upstream_client_cert": "",
+  "upstream_client_key": "",
+  "upstream_server_name": "",
+  "upstream_insecure_skip_verify": false,
+  "output_file": "",
+  "output_format": "text",
+  "log_level": "normal",
+  "file_log_level": "",
+  "log_file": "",
+  "quiet": false,
   "no_redact": false,
   "capture_body_limit": 1048576,
-  "log_body_limit": 4096,
-  "filter_domains": ["api.github.com", "httpbin.org"],
-  "filter_methods": ["GET"],
-  "filter_status_codes": [200],
-  "filter_paths": ["/users/"],
-  "ca_dir": "./my-ca",
-  "keep_ca": true
+  "log_body_limit": 0,
+  "filter_domains": [],
+  "filter_host_exact": [],
+  "filter_host_suffix": [],
+  "filter_methods": [],
+  "filter_status_codes": [],
+  "filter_paths": [],
+  "exclude_content_types": ["image/", "video/", "audio/"],
+  "decompress_response": true,
+  "enable_mirror": false,
+  "mirror_port": 8080
 }
 ```
 
-### 兼容性与语义说明
+### CA 目录
 
-- JSON / CSV / HAR 现在显式输出 `duration_ms`。
-- JSON 的请求/响应 headers 现在保留多值，格式从单个字符串变成字符串数组。
-- `--filter-domain`、`--filter-host-exact`、`--filter-host-suffix`、`--filter-method`、`--filter-status`、`--filter-path` 同时使用时是 AND 关系。
-- `--capture-body-limit` 限制每条请求/响应被捕获进日志的数据量；小 body 走内存，大 body 会落到专用临时目录。
-- `--log-body-limit` 会限制 text / CSV / JSON / HAR 的写出内容；`--max-body-size` 仍可用，但已是兼容别名。
-- 默认会脱敏敏感 header、URL query 和文本 body；需要原样输出时使用 `--no-redact`。
-- `--upstream-server-name` 会全局作用到所有上游 TLS 连接，只适合单一上游或受控测试场景。
-- Wireshark mirror 会保留原始未脱敏、未裁剪的请求体和响应体，方便对照真实交换。
-
-## 🌐 SOCKS5 代理支持
-
-HTTPSeal 包含完整的 SOCKS5 代理支持用于上游连接，非常适合绕过网络限制或通过 VPN 路由流量：
+如果没有设置 `ca_dir` 或 `--ca-dir`，HTTPSeal 会使用：
 
 ```bash
-# 启用默认地址的 SOCKS5 (127.0.0.1:1080)
+$XDG_CONFIG_HOME/httpseal/ca
+~/.config/httpseal/ca
+```
+
+默认 CA 目录是持久目录。生成的 CA 和域名证书会跨运行复用。如果默认目录无法创建，HTTPSeal 会回退到临时 CA 目录，并在退出时删除；设置 `--keep-ca` 时会保留该临时目录。
+
+## 日志和输出
+
+HTTPSeal 支持 `text`、`json`、`csv` 和 `har` 输出：
+
+```bash
+httpseal -o traffic.txt --format text -- curl https://httpbin.org/get
+httpseal -o traffic.json --format json -- curl https://httpbin.org/get
+httpseal -o traffic.csv --format csv -- curl https://httpbin.org/get
+httpseal -o traffic.har --format har -- curl https://httpbin.org/get
+```
+
+控制台和文件日志级别可以分开设置：
+
+```bash
+httpseal --log-level minimal --file-log-level verbose -o traffic.log -- curl https://httpbin.org/get
+httpseal -q -o traffic.json --format json -- curl https://httpbin.org/get
+httpseal --log-file system.log -o traffic.har --format har -- curl https://httpbin.org/get
+```
+
+日志级别包括 `none`、`minimal`、`normal`、`verbose` 和 `extra-verbose`。`-v` 启用 verbose，`-vv` 启用 extra-verbose。使用 `-o` 且没有设置 `--file-log-level` 时，文件日志默认使用 `verbose`。静默模式 (`-q`) 必须同时设置输出文件。
+
+重要语义：
+
+- JSON、CSV 和 HAR 都会输出 `duration_ms`。
+- JSON 的请求和响应 headers 会保留重复值，格式为字符串数组。
+- `--filter-domain`、`--filter-host-exact`、`--filter-host-suffix`、`--filter-method`、`--filter-status` 和 `--filter-path` 同时使用时是 AND 关系。
+- `--capture-body-limit` 控制每条请求或响应最多捕获多少字节。较大的 body 会落到临时文件，同时保留配置范围内的前缀用于日志。
+- `--log-body-limit` 控制 console、text、CSV、JSON 和 HAR 最多写出多少已捕获 body 字节。`--max-body-size` 仍可用，但只是兼容别名。
+- 默认会脱敏敏感 header、URL query 参数和文本 body。使用 `--no-redact` 可以关闭脱敏。
+- 默认会为日志解压压缩响应体。使用 `--decompress-response=false` 可以让日志保留压缩 body 的原始状态。
+
+## Wireshark Mirror
+
+`--enable-mirror` 会启动本地 HTTP mirror server，默认监听 `127.0.0.1:8080`。HTTPSeal 会把每条拦截到的交换额外发送一份明文 HTTP 表示到该端口，Wireshark 等工具可以直接抓取，不需要配置 TLS 解密。
+
+```bash
+# 终端 1
+wireshark -i lo -f "tcp port 8080"
+
+# 终端 2
+httpseal --enable-mirror -- curl https://api.github.com/users/octocat
+```
+
+需要其他端口时：
+
+```bash
+httpseal --enable-mirror --mirror-port 9090 -- curl https://httpbin.org/get
+```
+
+Mirror 流量会包含 `X-HTTPSeal-Original-Host`、`X-HTTPSeal-Mirror-ID` 和 `X-HTTPSeal-Timestamp` 等追踪 header。Mirror 使用的是日志脱敏和 body 裁剪之前的原始请求体和响应体，因此抓包文件应按敏感数据处理。
+
+## SOCKS5 和上游 TLS
+
+SOCKS5 作用于 HTTPSeal 到真实服务器的上游连接。目标应用不需要设置代理。
+
+```bash
+# 使用默认 SOCKS5 地址 127.0.0.1:1080。
 httpseal --socks5 -- curl https://www.google.com
 
-# 自定义 SOCKS5 地址（自动启用 SOCKS5）
-httpseal --socks5-addr 192.168.1.100:1080 -- wget https://github.com
+# 设置任一 SOCKS5 参数也会自动启用 SOCKS5。
+httpseal --socks5-addr 127.0.0.1:1080 -- curl https://www.google.com
 
-# 带身份验证的 SOCKS5
-httpseal --socks5-addr 127.0.0.1:1080 --socks5-user myuser --socks5-pass mypass -- curl https://api.github.com
+# 用户名和密码认证。
+httpseal --socks5-addr 127.0.0.1:1080 --socks5-user user --socks5-pass pass -- curl https://api.github.com
 ```
 
-## 📊 输出格式和日志
-
-HTTPSeal 提供多种输出格式和复杂的日志控制：
-
-### 输出格式
-
-1. **HAR (HTTP Archive) 格式** - 适用于浏览器开发工具和性能分析
-2. **JSON 格式** - 用于程序化分析的结构化数据
-3. **CSV 格式** - 兼容电子表格的完整数据
-4. **文本格式** - 人类可读的控制台输出
-
-### 双重日志系统
+上游 TLS 选项用于配置 HTTPSeal 如何校验真实服务器，以及如何向真实服务器认证：
 
 ```bash
-# 控制台和文件使用不同级别
-httpseal --log-level minimal --file-log-level verbose -o detailed.log -- curl https://api.github.com
-
-# 日志级别：none, minimal, normal, verbose
-# 静默模式需要输出文件
-httpseal -q -o traffic.json -- curl https://api.github.com
+httpseal \
+  --upstream-ca-file ./certs/upstream-ca.pem \
+  --upstream-client-cert ./certs/client.pem \
+  --upstream-client-key ./certs/client-key.pem \
+  -- curl https://internal.example.test
 ```
 
-## 🛠️ 完整命令行参考
+`--upstream-server-name` 会全局覆盖所有上游 TLS 连接的 SNI 和主机名校验。只有当所有被拦截的 TLS 流量都应匹配同一个证书名时才应使用它。`--upstream-insecure-skip-verify` 会关闭上游证书校验，应只用于受控测试环境。
 
-```bash
-httpseal [选项] -- <命令> [参数...]
+## CLI 参考
 
-网络选项:
-      --dns-ip string           DNS 服务器 IP 地址 (默认 "127.0.53.1")
-      --dns-port int           DNS 服务器端口 (默认 53)
-      --proxy-port int         HTTPS 代理端口 (默认 443)
-      --connection-timeout int  客户端连接空闲超时秒数 (默认 30)
+```text
+httpseal [flags] -- <command> [args...]
+
+网络:
+      --dns-ip string                   DNS server IP 地址 (默认 "127.0.53.1")
+      --dns-port int                    DNS server 端口 (默认 53)
+      --upstream-dns string             非劫持 DNS 查询使用的上游 DNS (默认 "8.8.8.8:53")
+      --proxy-port int                  HTTPS 代理端口 (默认 443)
+      --connection-timeout int          客户端连接空闲超时秒数 (默认 30)
 
 证书管理:
-      --ca-dir string          证书颁发机构目录 (默认: $XDG_CONFIG_HOME/httpseal/ca/)
-      --keep-ca                退出后保留 CA 目录
+      --ca-dir string                   CA 目录 (默认: XDG_CONFIG_HOME/httpseal/ca)
+      --keep-ca                         退出后保留 CA 目录 (默认持久 CA 目录总会保留)
 
-HTTP 流量拦截:
-      --enable-http            启用 HTTP 流量拦截 (默认: 禁用)
-      --http-port int          HTTP 代理端口 (默认 80)
+HTTP 拦截:
+      --enable-http                     启用 HTTP 流量拦截 (默认禁用)
+      --http-port int                   HTTP 代理端口 (默认 80)
 
-SOCKS5 代理支持:
-      --socks5                 启用默认地址的 SOCKS5 代理 (127.0.0.1:1080)
-      --socks5-addr string     SOCKS5 代理地址 (自动启用 SOCKS5)
-      --socks5-user string     SOCKS5 用户名
-      --socks5-pass string     SOCKS5 密码
-      --upstream-dns string    非劫持 DNS 查询转发到的上游 DNS (默认 "8.8.8.8:53")
-      --upstream-ca-file string              用于校验上游 TLS 证书的额外 CA 包
-      --upstream-client-cert string          上游 mTLS 客户端证书 PEM
-      --upstream-client-key string           上游 mTLS 客户端私钥 PEM
-      --upstream-server-name string          全局覆盖所有上游 TLS 连接的 SNI / 主机名校验
-      --upstream-insecure-skip-verify        跳过上游 TLS 证书校验
+SOCKS5 和上游 TLS:
+      --socks5                          使用默认地址启用 SOCKS5 (127.0.0.1:1080)
+      --socks5-addr string              SOCKS5 地址 (显式设置时自动启用 SOCKS5) (默认 "127.0.0.1:1080")
+      --socks5-user string              SOCKS5 用户名 (可选)
+      --socks5-pass string              SOCKS5 密码 (可选)
+      --upstream-ca-file string         用于校验上游 TLS 证书的额外 CA bundle
+      --upstream-client-cert string     上游 mTLS 客户端证书 PEM
+      --upstream-client-key string      上游 mTLS 客户端私钥 PEM
+      --upstream-server-name string     全局覆盖所有上游 TLS 连接的 server name
+      --upstream-insecure-skip-verify   跳过上游 TLS 证书校验
 
-Wireshark 集成:
-      --enable-mirror          启用 HTTP 镜像服务器用于 Wireshark 分析
-      --mirror-port int        HTTP 镜像服务器端口 (默认 8080)
+Wireshark mirror:
+      --enable-mirror                   启用用于 Wireshark 分析的 HTTP mirror server
+      --mirror-port int                 HTTP mirror server 端口 (默认 8080)
 
-输出选项:
-  -o, --output string          将流量输出到文件
-      --format string          输出格式: text, json, csv, har (默认 "text")
-      --log-level string       控制台日志级别: none, minimal, normal, verbose, extra-verbose
-      --file-log-level string  文件日志级别: none, minimal, normal, verbose, extra-verbose
-      --log-file string        单独输出系统日志到文件
-      --no-redact              关闭默认敏感信息脱敏
-  -q, --quiet                  静默模式 (需要 -o)
-  -v, --verbose                启用详细输出 (-v 详细, -vv 超详细)
+输出:
+  -o, --output string                   将流量输出到文件
+      --format string                   输出格式: text, json, csv, har (默认 "text")
+      --log-level string                控制台日志级别: none, minimal, normal, verbose, extra-verbose (默认 "normal")
+      --file-log-level string           文件日志级别 (使用 -o 时默认 verbose): none, minimal, normal, verbose, extra-verbose
+      --log-file string                 单独输出系统日志到文件
+  -q, --quiet                           关闭控制台输出
+  -v, --verbose count                   启用详细输出 (-v 为 verbose, -vv 为 extra-verbose)
+      --no-redact                       关闭敏感 header、URL 和文本 body 的默认脱敏
 
-过滤和限制:
-      --filter-domain strings        仅记录这些域的流量
-      --filter-host-exact strings    仅记录这些精确主机名
-      --filter-host-suffix strings   仅记录匹配这些后缀的主机名
-      --filter-method strings        仅记录这些 HTTP 方法
-      --filter-status ints           仅记录这些 HTTP 状态码
-      --filter-path strings          仅记录路径包含这些片段的流量
-      --capture-body-limit int       每条请求/响应最多捕获多少字节 (默认 1048576)
-      --log-body-limit int           最多打印 / 写出多少已捕获 body 字节 (默认 0)
-      --max-body-size int            `--log-body-limit` 的兼容别名
+过滤和 body 处理:
+      --filter-domain strings           只记录包含这些 domain 的流量 (可重复)
+      --filter-host-exact strings       只记录这些精确 host 的流量
+      --filter-host-suffix strings      只记录匹配这些后缀的 host
+      --filter-method strings           只记录这些 HTTP method
+      --filter-status ints              只记录这些 HTTP status code
+      --filter-path strings             只记录请求路径包含这些片段的流量
+      --exclude-content-type strings    排除这些 content type 的日志记录
+      --capture-body-limit int          每条请求/响应最多捕获多少 body 字节 (0=无限制) (默认 1048576)
+      --log-body-limit int              最多打印/写出多少已捕获 body 字节 (0=完整已捕获 body)
+      --max-body-size int               --log-body-limit 的废弃兼容别名
+      --decompress-response             为日志解压压缩响应体 (默认 true)
 
-配置:
-  -c, --config string          配置文件路径
-
-其他选项:
-  -h, --help                   显示帮助信息
-      --version                显示版本
+配置和元信息:
+  -c, --config string                   配置文件路径 (默认: XDG_CONFIG_HOME/httpseal/config.json)
+  -h, --help                            显示帮助
+      --version                         显示版本
 ```
 
-## 使用技巧与故障排查
+## 故障排查
 
-### 需要保留文件所有权的工具
+### 特权端口
 
-HTTPSeal 会在用户命名空间中启动目标命令。`tar` 这类工具会尝试恢复归档内的 UID/GID，而这些 ID 在命名空间里通常没有映射，会触发 `Cannot change ownership` 错误。HTTPSeal 会在检测到 `tar`/`gtar`/`bsdtar` 时自动注入 `TAR_OPTIONS=--no-same-owner --no-same-permissions`，让解压流程顺利完成。若你确实需要其他参数，可在启动前显式设置该环境变量，例如：
+默认 HTTPS 和 HTTP 拦截端口分别是 443 和 80。如果 HTTPSeal 无法绑定这些端口，请设置所需 capability：
 
 ```bash
-TAR_OPTIONS=--same-owner httpseal -- tar xf backup.tgz
+sudo setcap 'cap_net_bind_service=+ep' "$(command -v httpseal)"
 ```
 
-### 特权降级回退
-
-为了把命名空间内的 root 身份降回原始用户，HTTPSeal 会优先尝试 util-linux 的 `setpriv`（或备用的 `runuser`）。部分发行版或加固内核可能拒绝这一操作，此时 HTTPSeal 会继续以命名空间内的 root 身份运行。为了减少噪声，常规模式下这些回退提示会被静默；需要调试时，可加上 `-v`/`-vv` 查看详细日志。
+也可以通过 `--proxy-port` 和 `--http-port` 使用非特权端口，但普通 HTTPS/HTTP 流量的透明拦截通常依赖标准端口。
 
 ### `unshare: failed to execute newuidmap`
 
-在某些发行版上，`newuidmap`/`newgidmap` 并不会默认安装（通常由 `uidmap` 包提供）。当缺少这些 helper 时，如果 util-linux 的 `unshare` 被要求应用额外的 UID/GID 映射，就可能报：
+部分系统默认没有安装 `newuidmap` 和 `newgidmap`。Debian 和 Ubuntu 可使用：
 
+```bash
+sudo apt install uidmap
 ```
-unshare: failed to execute newuidmap: No such file or directory
+
+如果缺少这些 helper，HTTPSeal 会回退到 `unshare --map-root-user`。该模式下，进程在命名空间内可能显示为 UID/GID 0，但在宿主机上创建的文件仍会映射为调用 HTTPSeal 的用户。
+
+### 特权降级回退
+
+HTTPSeal 会优先使用 `setpriv`，再尝试 `runuser`，把命名空间内的 root 身份降回调用用户。部分系统会拒绝该操作。如果降级失败，HTTPSeal 会继续以命名空间内 root 身份运行。使用 `-v` 或 `-vv` 可以查看相关细节。
+
+### 会恢复文件所有权的工具
+
+`tar`、`gtar` 和 `bsdtar` 等归档工具可能尝试恢复命名空间内未映射的 UID/GID。HTTPSeal 会检测这些命令并设置：
+
+```bash
+TAR_OPTIONS=--no-same-owner --no-same-permissions
 ```
 
-HTTPSeal 已改为自动回退到仅使用 `unshare --map-root-user`（不启用额外映射），让命令仍然可以运行。回退模式下，进程在命名空间**内部**可能显示为 UID/GID `0`；如需在命名空间内也保持为原始用户，请安装 `uidmap`（Debian/Ubuntu 示例：`sudo apt install uidmap`）。
+如果需要其他行为，请在运行 HTTPSeal 前自行设置 `TAR_OPTIONS`。
 
-**建议安装**：提供 `newuidmap`/`newgidmap` 的包（Debian/Ubuntu：`sudo apt install uidmap`）。安装后 HTTPSeal 才能启用额外 UID/GID 映射，从而把命名空间内的 root 身份降回原始用户。
+### 流量没有被拦截
 
-**不安装的影响**：
-- 命令在命名空间**内部**可能显示为 UID/GID `0`（但由于 `--map-root-user` 的映射关系，在宿主机上创建的文件仍会显示为你的用户所有）。
-- 部分工具在检测到“以 root 运行”时会改变行为（配置目录、安全检查、拒绝运行等）。
+常见原因：
 
-## 证书管理
-
-HTTPSeal 提供**智能、自动化的证书管理**和持久存储以获得最佳性能：
-
-### 持久 CA 目录
-
-HTTPSeal 现在默认使用 **XDG 兼容的持久 CA 目录**：
-
-- **默认位置**：`$XDG_CONFIG_HOME/httpseal/ca/`（通常是 `~/.config/httpseal/ca/`）
-- **自动创建**：首次运行时创建目录并设置正确权限
-- **证书重用**：在会话间重用相同的 CA 和域证书
-- **性能提升**：消除频繁访问域的证书重新生成
-- **优雅回退**：如果持久路径不可用则回退到临时目录
+- 目标应用使用硬编码 IP，而不是 DNS。
+- 目标应用使用自定义 resolver，或忽略 `/etc/resolv.conf`。
+- 目标应用没有使用 HTTPSeal 准备的 CA 路径或环境变量。
+- 另一个本地服务已经占用 443；启用 `--enable-http` 时，也可能是 80 被占用。
+- 目标协议不是 TLS 上的 HTTP，也不是明文 HTTP。
 
 ## 开发
 
-### 项目结构
+项目结构：
 
-```
-httpseal/
-├── cmd/httpseal/           # 主应用程序入口点
-├── pkg/
-│   ├── cert/              # 证书颁发机构和管理
-│   ├── dns/               # DNS 服务器组件
-│   ├── logger/            # 增强日志功能
-│   ├── mirror/            # HTTP 镜像服务器
-│   ├── namespace/         # 进程包装和命名空间处理
-│   ├── proxy/             # HTTPS 代理服务器
-│   └── mount/             # OverlayFS 挂载操作
-└── internal/
-    └── config/            # 配置结构
+```text
+cmd/httpseal/        CLI 入口
+internal/config/     配置加载和合并逻辑
+pkg/cert/            CA 和动态证书生成
+pkg/dns/             DNS server 与域名到 loopback 的映射
+pkg/logger/          流量记录、脱敏和输出格式
+pkg/mirror/          本地 HTTP mirror server
+pkg/mount/           mount 辅助逻辑
+pkg/namespace/       命名空间 wrapper 和 bind mount
+pkg/proxy/           HTTPS 与 HTTP 拦截代理
 ```
 
-### 开发命令
+常用命令：
 
 ```bash
-# 构建带竞态检测的开发版本
-make dev
-
-# 运行测试
+make build
 make test
-
-# 代码质量检查
-make fmt      # 格式化代码
-make vet      # 运行 go vet
-make lint     # 代码检查 (需要 golangci-lint)
-
-# 依赖和清理
-make deps     # 安装/更新依赖
-make clean    # 清理构建产物
-
-# 实用命令
-make run-example  # 运行 wget 示例
-make check-caps   # 检查已安装的权限
-make help         # 显示所有可用目标
+make fmt
+make vet
+make lint
+make dev
+make clean
 ```
 
-## 优势和限制
+## 安全
 
-### 核心优势
+HTTPSeal 会对它启动的进程执行中间人拦截。请仅用于开发、调试和授权安全测试。
 
-✅ **双协议支持**：处理 HTTPS（带 TLS 解密）和明文 HTTP 流量拦截
-
-✅ **进程特定隔离**：仅拦截 HTTPSeal 启动的进程流量 - 无系统范围影响
-
-✅ **零配置**：目标应用无需代理设置或代码修改
-
-✅ **命名空间安全**：使用 Linux 挂载命名空间实现安全隔离，不污染系统环境
-
-✅ **自动证书处理**：在隔离环境中完全自动的 CA 证书管理 - 无需手动安装
-
-✅ **透明拦截**：应用程序正常连接到域名，不知道被监控
-
-### 限制
-
-❌ **仅限 Linux**：完全依赖平台 - 无法在 Windows、macOS 或其他系统上工作
-
-❌ **DNS 解析依赖**：使用硬编码 IP 或自定义 DNS 的应用可能绕过拦截
-
-❌ **单进程范围**：无法拦截非 HTTPSeal 启动的进程流量
-
-❌ **端口独占**：运行期间阻止 localhost:443 上的其他 HTTPS 服务
-
-### 最佳使用场景
-
-🎯 **完美适用于**：
-
-- **Linux 开发和调试**，零配置和自动证书管理
-- **CLI 工具流量分析**（`wget`、`curl`、自定义应用）
-- **基于 HAR 的性能分析**，集成浏览器开发工具
-- **Wireshark 驱动的网络分析**，零 TLS 复杂度
-- **CI/CD 管道集成**，结构化日志和会话跟踪
-- **安全研究**，需要进程隔离和全面流量分析
-
-🚫 **不适用于**：
-
-- 跨平台开发（仅限 Linux）
-- 交互式请求/响应修改
-- 生产环境监控
-- 大容量或企业级流量分析
-- Web 浏览器流量（请使用内置浏览器开发工具）
-
-## 安全考虑
-
-> ⚠️ **安全声明**：HTTPSeal 专为开发和测试环境设计。虽然经过充分测试，但它执行 MITM 操作，应仅用于授权测试目的。请勿在生产环境或敏感数据中使用。
-
-- **仅用于授权测试**：HTTPSeal 对网络流量执行 MITM 攻击
-- **仅限开发环境**：专为开发和测试场景设计
-- **权限模型**：仅需要 `CAP_NET_BIND_SERVICE` 用于特权端口绑定
-- **命名空间隔离**：更改包含在进程命名空间内并自动清理
-- **无系统修改**：HTTPSeal 从不修改系统的证书存储或全局网络设置
+HTTPSeal 的设计目标是避免修改系统全局信任或代理设置，但捕获的流量可能包含凭据、token、cookie、请求体和响应体。请按敏感数据处理日志和 mirror 抓包文件。不要把 HTTPSeal 用作生产监控工具，也不要检查未授权的流量。
 
 ## 贡献
 
-1. Fork 仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add some amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 打开 Pull Request
+1. Fork 仓库。
+2. 创建功能分支。
+3. 运行相关检查。
+4. 提交包含清晰说明的 pull request。
 
 ## 许可证
 
-本项目根据 MIT 许可证授权 - 请参阅 LICENSE 文件了解详情。
-
-## 免责声明
-
-HTTPSeal 仅用于合法开发、调试和授权安全测试目的。用户有责任确保使用此工具时遵守适用的法律法规。
+本项目使用 MIT 许可证。详情见 [LICENSE](LICENSE)。
