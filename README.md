@@ -1,6 +1,6 @@
 # HTTPSeal
 
-English | [Simplified Chinese](README-zh.md)
+English | [简体中文](README-zh.md)
 
 HTTPSeal is a Linux command-line tool for intercepting and logging HTTP and HTTPS traffic from a command that it launches. It uses Linux namespaces, DNS redirection, a local proxy, and a generated certificate authority to keep the interception scoped to the target process instead of changing system-wide proxy or trust settings.
 
