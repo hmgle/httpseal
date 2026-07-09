@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -27,6 +29,34 @@ const (
 	LogLevelExtraVerbose LogLevel = "extra-verbose" // Everything including all bodies (text and binary)
 )
 
+// CaptureMode describes how intercepted requests are handled.
+type CaptureMode string
+
+const (
+	CaptureModeDisabled  CaptureMode = ""
+	CaptureModeSynthetic CaptureMode = "synthetic"
+	CaptureModeUpstream  CaptureMode = "upstream"
+)
+
+func (m CaptureMode) Enabled() bool {
+	return m != CaptureModeDisabled
+}
+
+// ParseCaptureOnlyUpstreamURL validates and parses a capture-only responder URL.
+func ParseCaptureOnlyUpstreamURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("capture-only-upstream must be a valid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("capture-only-upstream scheme must be http or https")
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("capture-only-upstream must include a host")
+	}
+	return parsed, nil
+}
+
 // Config holds the application configuration
 type Config struct {
 	// Network settings
@@ -45,10 +75,12 @@ type Config struct {
 
 	// Connection settings
 	ConnectionTimeout       int // Client connection idle timeout in seconds (default 30)
-	CaptureOnly             bool
-	CaptureOnlyStatus       int    // Synthetic status code returned when capture-only mode is enabled
-	CaptureOnlyUpstream     string // Optional responder upstream used instead of a synthetic response
-	CaptureOnlyPreserveHost bool   // Preserve the original Host header for capture-only upstream
+	CaptureMode             CaptureMode
+	CaptureOnly             bool     // Raw capture-only flag; CaptureMode is the runtime source of truth
+	CaptureOnlyStatus       int      // Synthetic status code returned when capture-only mode is enabled
+	CaptureOnlyUpstream     string   // Raw responder upstream used for config and logging
+	CaptureOnlyUpstreamURL  *url.URL // Parsed responder upstream used at runtime
+	CaptureOnlyPreserveHost bool     // Preserve the original Host header for capture-only upstream
 
 	// SOCKS5 proxy settings
 	SOCKS5Enabled              bool   // Enable SOCKS5 proxy for upstream connections

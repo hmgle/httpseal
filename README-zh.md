@@ -105,7 +105,7 @@ httpseal --capture-only-upstream http://127.0.0.1:8080 -- curl https://example.i
 
 默认合成响应是 `204 No Content`。设置 `--capture-only-upstream` 也会启用 capture-only 行为。HTTPSeal 会把捕获到的请求转发到该 HTTP/HTTPS responder，并把 responder 的响应返回给目标进程。原始 path 和 query 会追加到 responder URL 后面，所以 `--capture-only-upstream http://127.0.0.1:8080/mock` 会把 `/api?x=1` 映射为 `http://127.0.0.1:8080/mock/api?x=1`。
 
-默认情况下，转发给 responder 的请求使用 responder 地址作为 `Host`，并附带 `X-HTTPSeal-Original-Host`、`X-HTTPSeal-Original-Scheme` 和 `X-HTTPSeal-Original-URL`。如果 responder 需要收到原始 `Host`，使用 `--capture-only-preserve-host`。
+默认情况下，转发给 responder 的请求使用 responder 地址作为 `Host`，并附带 `X-HTTPSeal-Original-Host`、`X-HTTPSeal-Original-Scheme` 和 `X-HTTPSeal-Original-URL`。如果 responder 需要收到原始 `Host`，使用 `--capture-only-preserve-host`。Capture-only responder 请求会直接发出；SOCKS5 设置只作用于真实上游服务器流量。
 
 Capture-only 模式和普通 HTTPS 拦截有相同前提：目标进程必须使用 HTTPSeal 准备的 DNS，并信任隔离环境里的 HTTPSeal CA。
 

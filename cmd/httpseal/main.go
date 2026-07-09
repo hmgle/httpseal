@@ -234,7 +234,8 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate parameters
-	if err := validateFlags(); err != nil {
+	validatedFlags, err := validateFlags()
+	if err != nil {
 		return err
 	}
 
@@ -256,10 +257,6 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 			effectiveSocks5Enabled = true
 		}
 	}
-
-	// A responder upstream is a capture-only mode because it must not contact
-	// the original destination.
-	effectiveCaptureOnly := captureOnly || captureOnlyUpstream != ""
 
 	// Auto-upgrade log level if extra-verbose is enabled
 	effectiveLogLevel := logLevel
@@ -287,9 +284,11 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 
 		// Connection settings
 		ConnectionTimeout:       connectionTimeout,
-		CaptureOnly:             effectiveCaptureOnly,
+		CaptureMode:             validatedFlags.captureMode,
+		CaptureOnly:             validatedFlags.captureMode.Enabled(),
 		CaptureOnlyStatus:       captureOnlyStatus,
 		CaptureOnlyUpstream:     captureOnlyUpstream,
+		CaptureOnlyUpstreamURL:  validatedFlags.captureOnlyUpstreamURL,
 		CaptureOnlyPreserveHost: captureOnlyPreserveHost,
 
 		// SOCKS5 proxy settings
@@ -378,9 +377,9 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	if cfg.UpstreamServerName != "" {
 		log.Warn("--upstream-server-name applies to every upstream TLS connection; use it only when all intercepted TLS traffic targets the same certificate name")
 	}
-	if cfg.CaptureOnlyUpstream != "" && !cfg.Quiet {
-		log.Info("Capture-only upstream enabled: %s", cfg.CaptureOnlyUpstream)
-	} else if cfg.CaptureOnly && !cfg.Quiet {
+	if cfg.CaptureMode == config.CaptureModeUpstream && !cfg.Quiet {
+		log.Info("Capture-only upstream enabled: %s", cfg.CaptureOnlyUpstreamURL.String())
+	} else if cfg.CaptureMode == config.CaptureModeSynthetic && !cfg.Quiet {
 		log.Info("Capture-only mode enabled; upstream requests will not be sent")
 	}
 
@@ -629,8 +628,17 @@ func flagChanged(cmd *cobra.Command, name string) bool {
 	return flag != nil && flag.Changed
 }
 
-// validateFlags validates command line flags
-func validateFlags() error {
+type validatedFlagSettings struct {
+	captureMode            config.CaptureMode
+	captureOnlyUpstreamURL *url.URL
+}
+
+// validateFlags validates command line flags.
+func validateFlags() (*validatedFlagSettings, error) {
+	validated := &validatedFlagSettings{
+		captureMode: captureModeFromFlags(),
+	}
+
 	// Validate output format
 	validFormats := []string{"text", "json", "csv", "har"}
 	valid := false
@@ -641,7 +649,7 @@ func validateFlags() error {
 		}
 	}
 	if !valid {
-		return fmt.Errorf("invalid output format '%s', must be one of: %s", outputFormat, strings.Join(validFormats, ", "))
+		return nil, fmt.Errorf("invalid output format '%s', must be one of: %s", outputFormat, strings.Join(validFormats, ", "))
 	}
 
 	// Validate log level
@@ -654,7 +662,7 @@ func validateFlags() error {
 		}
 	}
 	if !valid {
-		return fmt.Errorf("invalid log level '%s', must be one of: %s", logLevel, strings.Join(validLevels, ", "))
+		return nil, fmt.Errorf("invalid log level '%s', must be one of: %s", logLevel, strings.Join(validLevels, ", "))
 	}
 
 	// Validate file log level (if specified)
@@ -667,79 +675,77 @@ func validateFlags() error {
 			}
 		}
 		if !valid {
-			return fmt.Errorf("invalid file-log-level '%s', must be one of: %s", fileLogLevel, strings.Join(validLevels, ", "))
+			return nil, fmt.Errorf("invalid file-log-level '%s', must be one of: %s", fileLogLevel, strings.Join(validLevels, ", "))
 		}
 	}
 
 	// Validate body capture and logging limits
 	if captureBodyLimit < 0 {
-		return fmt.Errorf("capture-body-limit must be >= 0")
+		return nil, fmt.Errorf("capture-body-limit must be >= 0")
 	}
 	if logBodyLimit < 0 {
-		return fmt.Errorf("log-body-limit must be >= 0")
+		return nil, fmt.Errorf("log-body-limit must be >= 0")
 	}
 	if captureOnlyStatus < 100 || captureOnlyStatus > 599 {
-		return fmt.Errorf("capture-only-status must be a valid HTTP status code (100-599)")
+		return nil, fmt.Errorf("capture-only-status must be a valid HTTP status code (100-599)")
 	}
-	if captureOnlyUpstream != "" {
-		if err := validateCaptureOnlyUpstreamURL(captureOnlyUpstream); err != nil {
-			return err
+	if validated.captureMode == config.CaptureModeUpstream {
+		parsed, err := config.ParseCaptureOnlyUpstreamURL(captureOnlyUpstream)
+		if err != nil {
+			return nil, err
 		}
+		validated.captureOnlyUpstreamURL = parsed
 	} else if captureOnlyPreserveHost {
-		return fmt.Errorf("capture-only-preserve-host requires capture-only-upstream")
+		return nil, fmt.Errorf("capture-only-preserve-host requires capture-only-upstream")
 	}
 	if _, _, err := net.SplitHostPort(upstreamDNS); err != nil {
-		return fmt.Errorf("upstream-dns must be in host:port form: %w", err)
+		return nil, fmt.Errorf("upstream-dns must be in host:port form: %w", err)
 	}
 	for _, statusCode := range filterStatusCodes {
 		if statusCode < 100 || statusCode > 599 {
-			return fmt.Errorf("filter-status must contain valid HTTP status codes (100-599)")
+			return nil, fmt.Errorf("filter-status must contain valid HTTP status codes (100-599)")
 		}
 	}
 	if (upstreamClientCert == "") != (upstreamClientKey == "") {
-		return fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")
+		return nil, fmt.Errorf("upstream-client-cert and upstream-client-key must be provided together")
 	}
 
 	// If quiet mode is enabled, require output file
 	if quiet && outputFile == "" {
-		return fmt.Errorf("quiet mode (-q) requires output file (-o)")
+		return nil, fmt.Errorf("quiet mode (-q) requires output file (-o)")
 	}
 
 	// Validate mirror port
 	if mirrorPort < 1 || mirrorPort > 65535 {
-		return fmt.Errorf("mirror-port must be between 1 and 65535")
+		return nil, fmt.Errorf("mirror-port must be between 1 and 65535")
 	}
 
 	// Check for port conflicts
 	if enableMirror && mirrorPort == proxyPort {
-		return fmt.Errorf("mirror-port cannot be the same as proxy-port")
+		return nil, fmt.Errorf("mirror-port cannot be the same as proxy-port")
 	}
 	if enableMirror && mirrorPort == dnsPort {
-		return fmt.Errorf("mirror-port cannot be the same as dns-port")
+		return nil, fmt.Errorf("mirror-port cannot be the same as dns-port")
 	}
 	if enableHTTP && httpPort == proxyPort {
-		return fmt.Errorf("http-port cannot be the same as proxy-port")
+		return nil, fmt.Errorf("http-port cannot be the same as proxy-port")
 	}
 	if enableHTTP && httpPort == dnsPort {
-		return fmt.Errorf("http-port cannot be the same as dns-port")
+		return nil, fmt.Errorf("http-port cannot be the same as dns-port")
 	}
 	if enableHTTP && enableMirror && httpPort == mirrorPort {
-		return fmt.Errorf("http-port cannot be the same as mirror-port")
+		return nil, fmt.Errorf("http-port cannot be the same as mirror-port")
 	}
 
-	return nil
+	return validated, nil
 }
 
-func validateCaptureOnlyUpstreamURL(rawURL string) error {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("capture-only-upstream must be a valid URL: %w", err)
+func captureModeFromFlags() config.CaptureMode {
+	if captureOnlyUpstream != "" {
+		return config.CaptureModeUpstream
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("capture-only-upstream scheme must be http or https")
+	if captureOnly {
+		return config.CaptureModeSynthetic
 	}
-	if parsed.Host == "" {
-		return fmt.Errorf("capture-only-upstream must include a host")
-	}
-	return nil
+	return config.CaptureModeDisabled
 }

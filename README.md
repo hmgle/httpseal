@@ -105,7 +105,7 @@ httpseal --capture-only-upstream http://127.0.0.1:8080 -- curl https://example.i
 
 The default synthetic response is `204 No Content`. Setting `--capture-only-upstream` also enables capture-only behavior. HTTPSeal forwards the captured request to that HTTP/HTTPS responder and returns the responder's response to the target process. The original path and query are appended to the responder URL, so `--capture-only-upstream http://127.0.0.1:8080/mock` maps `/api?x=1` to `http://127.0.0.1:8080/mock/api?x=1`.
 
-By default, responder requests use the responder host as `Host` and include `X-HTTPSeal-Original-Host`, `X-HTTPSeal-Original-Scheme`, and `X-HTTPSeal-Original-URL`. Use `--capture-only-preserve-host` when the responder should receive the original `Host` value.
+By default, responder requests use the responder host as `Host` and include `X-HTTPSeal-Original-Host`, `X-HTTPSeal-Original-Scheme`, and `X-HTTPSeal-Original-URL`. Use `--capture-only-preserve-host` when the responder should receive the original `Host` value. Capture-only responder requests are sent directly; SOCKS5 settings only apply to real upstream server traffic.
 
 Capture-only mode has the same interception requirements as normal HTTPS capture: the target process must use HTTPSeal's DNS and trust the isolated HTTPSeal CA.
 

@@ -27,19 +27,21 @@ import (
 
 // Server implements an HTTPS/HTTP proxy server for traffic interception
 type Server struct {
-	port          int
-	listener      net.Listener
-	ca            *cert.CA
-	dnsServer     *dns.Server
-	logger        logger.Logger
-	trafficLogger logger.TrafficLogger
-	mirrorServer  *mirror.Server
-	wg            sync.WaitGroup
-	stopCh        chan struct{}
-	isHTTPS       bool           // true for HTTPS, false for HTTP
-	config        *config.Config // Configuration for SOCKS5 proxy support
-	httpClient    *http.Client   // Standard HTTP client
-	socks5Client  *http.Client   // SOCKS5-enabled HTTP client
+	port                int
+	listener            net.Listener
+	ca                  *cert.CA
+	dnsServer           *dns.Server
+	logger              logger.Logger
+	trafficLogger       logger.TrafficLogger
+	mirrorServer        *mirror.Server
+	wg                  sync.WaitGroup
+	stopCh              chan struct{}
+	isHTTPS             bool           // true for HTTPS, false for HTTP
+	config              *config.Config // Configuration for SOCKS5 proxy support
+	httpClient          *http.Client   // Standard HTTP client
+	socks5Client        *http.Client   // SOCKS5-enabled HTTP client
+	captureMode         config.CaptureMode
+	captureOnlyUpstream *url.URL
 }
 
 // NewServer creates a new HTTPS proxy server
@@ -47,18 +49,23 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 	if err := prepareBodySpoolDir(); err != nil {
 		return nil, err
 	}
-	s := &Server{
-		port:          port,
-		ca:            ca,
-		dnsServer:     dnsServer,
-		logger:        trafficLogger, // TrafficLogger implements Logger interface
-		trafficLogger: trafficLogger,
-		mirrorServer:  mirrorServer,
-		stopCh:        make(chan struct{}),
-		isHTTPS:       true,
-		config:        cfg,
+	captureMode, captureOnlyUpstream, err := resolveCaptureOnlyConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
-	var err error
+	s := &Server{
+		port:                port,
+		ca:                  ca,
+		dnsServer:           dnsServer,
+		logger:              trafficLogger, // TrafficLogger implements Logger interface
+		trafficLogger:       trafficLogger,
+		mirrorServer:        mirrorServer,
+		stopCh:              make(chan struct{}),
+		isHTTPS:             true,
+		config:              cfg,
+		captureMode:         captureMode,
+		captureOnlyUpstream: captureOnlyUpstream,
+	}
 	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
 	if err != nil {
 		return nil, err
@@ -75,18 +82,23 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 	if err := prepareBodySpoolDir(); err != nil {
 		return nil, err
 	}
-	s := &Server{
-		port:          port,
-		ca:            nil, // No CA needed for HTTP
-		dnsServer:     dnsServer,
-		logger:        trafficLogger, // TrafficLogger implements Logger interface
-		trafficLogger: trafficLogger,
-		mirrorServer:  mirrorServer,
-		stopCh:        make(chan struct{}),
-		isHTTPS:       false,
-		config:        cfg,
+	captureMode, captureOnlyUpstream, err := resolveCaptureOnlyConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
-	var err error
+	s := &Server{
+		port:                port,
+		ca:                  nil, // No CA needed for HTTP
+		dnsServer:           dnsServer,
+		logger:              trafficLogger, // TrafficLogger implements Logger interface
+		trafficLogger:       trafficLogger,
+		mirrorServer:        mirrorServer,
+		stopCh:              make(chan struct{}),
+		isHTTPS:             false,
+		config:              cfg,
+		captureMode:         captureMode,
+		captureOnlyUpstream: captureOnlyUpstream,
+	}
 	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
 	if err != nil {
 		return nil, err
@@ -96,6 +108,43 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 		return nil, err
 	}
 	return s, nil
+}
+
+func resolveCaptureOnlyConfig(cfg *config.Config) (config.CaptureMode, *url.URL, error) {
+	mode := cfg.CaptureMode
+	if mode == config.CaptureModeDisabled {
+		switch {
+		case cfg.CaptureOnlyUpstreamURL != nil || cfg.CaptureOnlyUpstream != "":
+			mode = config.CaptureModeUpstream
+		case cfg.CaptureOnly:
+			mode = config.CaptureModeSynthetic
+		}
+	}
+
+	switch mode {
+	case config.CaptureModeDisabled:
+		cfg.CaptureOnly = false
+		return mode, nil, nil
+	case config.CaptureModeSynthetic:
+		cfg.CaptureOnly = true
+		return mode, nil, nil
+	case config.CaptureModeUpstream:
+		cfg.CaptureOnly = true
+		if cfg.CaptureOnlyUpstreamURL == nil {
+			if cfg.CaptureOnlyUpstream == "" {
+				return mode, nil, fmt.Errorf("capture-only upstream mode requires capture-only-upstream")
+			}
+			parsed, err := config.ParseCaptureOnlyUpstreamURL(cfg.CaptureOnlyUpstream)
+			if err != nil {
+				return mode, nil, err
+			}
+			cfg.CaptureOnlyUpstreamURL = parsed
+		}
+		upstream := *cfg.CaptureOnlyUpstreamURL
+		return mode, &upstream, nil
+	default:
+		return mode, nil, fmt.Errorf("invalid capture mode %q", mode)
+	}
 }
 
 // createHTTPClient creates a reusable HTTP client with optional SOCKS5 proxy
@@ -329,7 +378,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			return
 		}
 
-		if s.config.CaptureOnly {
+		if s.captureMode.Enabled() {
 			startTime := time.Now()
 			resp, err := s.captureOnlyResponse(req, realDomain, scheme, requestBody)
 			duration := time.Since(startTime)
@@ -500,10 +549,14 @@ func (s *Server) respondWithProxyError(conn net.Conn, req *http.Request, realDom
 }
 
 func (s *Server) captureOnlyResponse(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
-	if s.config.CaptureOnlyUpstream != "" {
+	switch s.captureMode {
+	case config.CaptureModeUpstream:
 		return s.forwardCaptureOnlyRequest(req, realDomain, scheme, requestBody)
+	case config.CaptureModeSynthetic:
+		return s.newCaptureOnlyResponse(req), nil
+	default:
+		return nil, fmt.Errorf("capture-only response requested while capture mode is %q", s.captureMode)
 	}
-	return s.newCaptureOnlyResponse(req), nil
 }
 
 func (s *Server) newCaptureOnlyResponse(req *http.Request) *http.Response {
@@ -521,12 +574,13 @@ func (s *Server) newCaptureOnlyResponse(req *http.Request) *http.Response {
 		Header:        make(http.Header),
 		Body:          io.NopCloser(strings.NewReader("")),
 		ContentLength: 0,
-		Close:         true,
+		Close:         req.Close,
 		Request:       req,
 	}
 	resp.Header.Set("Content-Length", "0")
-	resp.Header.Set("Connection", "close")
-	resp.Header.Set("X-HTTPSeal-Capture-Only", "true")
+	if req.Close {
+		resp.Header.Set("Connection", "close")
+	}
 
 	return resp
 }
@@ -608,7 +662,7 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 }
 
 func (s *Server) forwardCaptureOnlyRequest(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
-	targetURL, err := captureOnlyTargetURL(s.config.CaptureOnlyUpstream, req.URL)
+	targetURL, err := captureOnlyTargetURL(s.captureOnlyUpstream, req.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -628,6 +682,8 @@ func (s *Server) forwardCaptureOnlyRequest(req *http.Request, realDomain, scheme
 	newReq.Header.Set("X-HTTPSeal-Capture-Only", "upstream")
 
 	s.logger.Debug("Forwarding capture-only request for %s to %s", realDomain, targetURL.String())
+	// The capture-only responder is a control-plane endpoint. Keep it direct so
+	// SOCKS5 settings only affect real upstream server traffic.
 	return s.httpClient.Do(newReq)
 }
 
@@ -660,16 +716,9 @@ func newOutboundRequest(req *http.Request, requestBody *bodyCapture, targetURL *
 	return newReq, nil
 }
 
-func captureOnlyTargetURL(baseRawURL string, requestURL *url.URL) (*url.URL, error) {
-	base, err := url.Parse(baseRawURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse capture-only upstream URL: %w", err)
-	}
-	if base.Scheme != "http" && base.Scheme != "https" {
-		return nil, fmt.Errorf("capture-only upstream scheme must be http or https")
-	}
-	if base.Host == "" {
-		return nil, fmt.Errorf("capture-only upstream must include a host")
+func captureOnlyTargetURL(base *url.URL, requestURL *url.URL) (*url.URL, error) {
+	if base == nil {
+		return nil, fmt.Errorf("capture-only upstream URL is not configured")
 	}
 
 	target := *base
