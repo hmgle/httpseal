@@ -52,6 +52,10 @@ _httpseal() {
             COMPREPLY=($(compgen -W "$timeout_values" -- "$cur"))
             return
             ;;
+        --capture-only-status)
+            COMPREPLY=($(compgen -W "200 201 202 204 400 404 500 502 503" -- "$cur"))
+            return
+            ;;
         --dns-ip)
             COMPREPLY=($(compgen -W "$dns_ips" -- "$cur"))
             return
@@ -135,6 +139,8 @@ _httpseal() {
             --ca-dir
             --config
             --connection-timeout
+            --capture-only
+            --capture-only-status
             --dns-ip
             --dns-port
             --upstream-dns

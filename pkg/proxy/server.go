@@ -328,6 +328,22 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			return
 		}
 
+		if s.config.CaptureOnly {
+			startTime := time.Now()
+			resp, responseBody := s.newCaptureOnlyResponse(req)
+			duration := time.Since(startTime)
+
+			s.emitTraffic(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+
+			if err := resp.Write(conn); err != nil {
+				s.logger.Error("Failed to write capture-only response: %v", err)
+			}
+			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
+			}
+			break
+		}
+
 		// Forward the request to the real server
 		startTime := time.Now()
 		resp, err := s.forwardRequest(req, realDomain, requestBody, scheme)
@@ -347,35 +363,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			break
 		}
 
-		trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
-		logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
-
-		// Log the traffic record
-		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
-			s.logger.Error("Failed to log traffic: %v", err)
-		}
-
-		// Mirror the traffic for Wireshark analysis (if mirror server is enabled)
-		if s.mirrorServer != nil {
-			requestBodyText, reqErr := bodyCaptureString(requestBody)
-			if reqErr != nil {
-				s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
-			}
-			responseBodyText, respErr := bodyCaptureString(responseBody)
-			if respErr != nil {
-				s.logger.Warn("Failed to read response body for mirroring: %v", respErr)
-			}
-			s.mirrorServer.MirrorTraffic(
-				realDomain,
-				req.Method,
-				req.URL.String(),
-				requestBodyText,
-				responseBodyText,
-				resp.StatusCode,
-				req.Header,
-				resp.Header,
-			)
-		}
+		s.emitTraffic(req, resp, realDomain, scheme, duration, requestBody, responseBody)
 
 		// Normalize response to HTTP/1.1 to fix HTTP/2 compatibility issues
 		s.normalizeResponseForHTTP11(resp, responseBody.size)
@@ -478,6 +466,70 @@ func (s *Server) respondWithProxyError(conn net.Conn, req *http.Request, realDom
 	if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
 		s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 	}
+}
+
+func (s *Server) newCaptureOnlyResponse(req *http.Request) (*http.Response, *bodyCapture) {
+	statusCode := s.config.CaptureOnlyStatus
+	if statusCode == 0 {
+		statusCode = http.StatusNoContent
+	}
+
+	resp := &http.Response{
+		StatusCode:    statusCode,
+		Status:        formatHTTPStatus(statusCode),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader("")),
+		ContentLength: 0,
+		Close:         true,
+		Request:       req,
+	}
+	resp.Header.Set("Content-Length", "0")
+	resp.Header.Set("Connection", "close")
+	resp.Header.Set("X-HTTPSeal-Capture-Only", "true")
+
+	return resp, &bodyCapture{}
+}
+
+func formatHTTPStatus(statusCode int) string {
+	if text := http.StatusText(statusCode); text != "" {
+		return fmt.Sprintf("%d %s", statusCode, text)
+	}
+	return strconv.Itoa(statusCode)
+}
+
+func (s *Server) emitTraffic(req *http.Request, resp *http.Response, realDomain, scheme string, duration time.Duration, requestBody, responseBody *bodyCapture) {
+	trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+	logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
+
+	if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
+		s.logger.Error("Failed to log traffic: %v", err)
+	}
+
+	if s.mirrorServer == nil {
+		return
+	}
+
+	requestBodyText, reqErr := bodyCaptureString(requestBody)
+	if reqErr != nil {
+		s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
+	}
+	responseBodyText, respErr := bodyCaptureString(responseBody)
+	if respErr != nil {
+		s.logger.Warn("Failed to read response body for mirroring: %v", respErr)
+	}
+	s.mirrorServer.MirrorTraffic(
+		realDomain,
+		req.Method,
+		req.URL.String(),
+		requestBodyText,
+		responseBodyText,
+		resp.StatusCode,
+		req.Header,
+		resp.Header,
+	)
 }
 
 // createTLSConfig creates TLS configuration with dynamic certificate for the domain

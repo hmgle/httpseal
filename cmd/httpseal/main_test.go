@@ -112,3 +112,35 @@ func TestValidateFlagsRequiresUpstreamDNSHostPort(t *testing.T) {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
+
+func TestValidateFlagsRejectsInvalidCaptureOnlyStatus(t *testing.T) {
+	oldUpstreamDNS := upstreamDNS
+	oldOutputFormat := outputFormat
+	oldLogLevel := logLevel
+	oldQuiet := quiet
+	oldOutputFile := outputFile
+	oldCaptureOnlyStatus := captureOnlyStatus
+	t.Cleanup(func() {
+		upstreamDNS = oldUpstreamDNS
+		outputFormat = oldOutputFormat
+		logLevel = oldLogLevel
+		quiet = oldQuiet
+		outputFile = oldOutputFile
+		captureOnlyStatus = oldCaptureOnlyStatus
+	})
+
+	upstreamDNS = "8.8.8.8:53"
+	outputFormat = "text"
+	logLevel = "normal"
+	quiet = false
+	outputFile = ""
+	captureOnlyStatus = 99
+
+	err := validateFlags()
+	if err == nil {
+		t.Fatal("expected validation to fail for invalid capture-only status")
+	}
+	if !strings.Contains(err.Error(), "capture-only-status") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}

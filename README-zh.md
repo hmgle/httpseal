@@ -58,6 +58,9 @@ httpseal -vv -- curl https://httpbin.org/get
 # 同时拦截明文 HTTP。
 httpseal --enable-http -- curl http://httpbin.org/get
 
+# 只捕获请求，不连接真实上游。
+httpseal --capture-only -- curl https://example.invalid
+
 # 写入结构化流量日志。
 httpseal -o traffic.json --format json -- curl https://httpbin.org/get
 httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
@@ -83,9 +86,20 @@ httpseal --config ./config.json --log-level minimal -- curl https://httpbin.org/
 4. 目标命令的 DNS 查询会经过 HTTPSeal 的 DNS server。
 5. 域名会被映射到 loopback 地址，访问 443 或可选的 80 端口时会进入 HTTPSeal 的本地代理。
 6. HTTPS 连接会收到由 HTTPSeal CA 签发的动态证书。目标进程通过隔离的 CA bundle 信任该 CA。
-7. HTTPSeal 将请求转发到真实上游服务器，记录交换内容，并把上游响应返回给目标进程。
+7. HTTPSeal 将请求转发到真实上游服务器，记录交换内容，并把上游响应返回给目标进程。在 capture-only 模式下，它只记录请求，并返回本地合成响应，不连接真实上游。
 
 默认只拦截 HTTPS。需要拦截明文 HTTP 时，使用 `--enable-http`。
+
+## Capture-Only 模式
+
+只需要目标命令生成的请求时，可以使用 `--capture-only`。HTTPSeal 仍会在本地完成 DNS 映射和 HTTPS TLS 会话，但不会把捕获到的请求发送到真实上游。即使目标域名不存在或无法访问，也可以用它检查 `curl` 等客户端实际发出的请求。
+
+```bash
+httpseal --capture-only -- curl https://example.invalid
+httpseal --capture-only --capture-only-status 200 -- curl https://example.invalid
+```
+
+默认合成响应是 `204 No Content`。Capture-only 模式和普通 HTTPS 拦截有相同前提：目标进程必须使用 HTTPSeal 准备的 DNS，并信任隔离环境里的 HTTPSeal CA。
 
 ## 配置
 
@@ -118,6 +132,8 @@ httpseal --config ./config.json -- curl https://httpbin.org/get
   "enable_http": true,
   "http_port": 80,
   "connection_timeout": 30,
+  "capture_only": false,
+  "capture_only_status": 204,
   "socks5_enabled": false,
   "socks5_address": "127.0.0.1:1080",
   "socks5_username": "",
@@ -257,6 +273,8 @@ httpseal [flags] -- <command> [args...]
 HTTP 拦截:
       --enable-http                     启用 HTTP 流量拦截 (默认禁用)
       --http-port int                   HTTP 代理端口 (默认 80)
+      --capture-only                    捕获请求并返回合成响应，不连接真实上游
+      --capture-only-status int         capture-only 模式返回的 HTTP status code (默认 204)
 
 SOCKS5 和上游 TLS:
       --socks5                          使用默认地址启用 SOCKS5 (127.0.0.1:1080)

@@ -18,6 +18,7 @@ set -l https_ports 443 8443
 set -l mirror_ports 8080 9090 8000
 set -l socks5_addrs '127.0.0.1:1080' '127.0.0.1:1081'
 set -l body_sizes 0 1024 4096 65536 10485760
+set -l status_codes 200 201 202 204 400 404 500 502 503
 
 # Check if we're after -- separator
 function __httpseal_after_separator
@@ -47,6 +48,8 @@ complete -c httpseal -l http-port -d "HTTP proxy port" -xa "$http_ports"
 
 # Connection settings
 complete -c httpseal -l connection-timeout -d "Client connection idle timeout in seconds" -xa "$timeout_values"
+complete -c httpseal -l capture-only -d "Capture requests and return a synthetic response without contacting upstream servers"
+complete -c httpseal -l capture-only-status -d "HTTP status code returned in capture-only mode" -xa "$status_codes"
 
 # SOCKS5 proxy settings
 complete -c httpseal -l socks5 -d "Enable SOCKS5 proxy with default address"

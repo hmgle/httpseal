@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -39,6 +40,8 @@ var (
 
 	// Connection settings
 	connectionTimeout int
+	captureOnly       bool
+	captureOnlyStatus = http.StatusNoContent
 
 	// SOCKS5 proxy settings
 	socks5Enabled              bool
@@ -140,7 +143,10 @@ Examples:
   httpseal --socks5-addr 127.0.0.1:1080 --socks5-user myuser --socks5-pass mypass -- wget https://github.com
   
   # Explicit SOCKS5 enable flag (uses default address 127.0.0.1:1080)
-  httpseal --socks5 -- curl https://www.google.com`,
+  httpseal --socks5 -- curl https://www.google.com
+
+  # Capture requests without sending them to the upstream server
+  httpseal --capture-only -- curl https://example.invalid`,
 		Version: version,
 		Args:    cobra.MinimumNArgs(1),
 		RunE:    runHTTPSeal,
@@ -162,6 +168,8 @@ Examples:
 
 	// Connection settings
 	rootCmd.Flags().IntVar(&connectionTimeout, "connection-timeout", 30, "Client connection idle timeout in seconds")
+	rootCmd.Flags().BoolVar(&captureOnly, "capture-only", false, "Capture requests and return a synthetic response without contacting upstream servers")
+	rootCmd.Flags().IntVar(&captureOnlyStatus, "capture-only-status", http.StatusNoContent, "HTTP status code returned in capture-only mode")
 
 	// SOCKS5 proxy settings
 	rootCmd.Flags().BoolVar(&socks5Enabled, "socks5", false, "Enable SOCKS5 proxy with default address (127.0.0.1:1080)")
@@ -267,6 +275,8 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 
 		// Connection settings
 		ConnectionTimeout: connectionTimeout,
+		CaptureOnly:       captureOnly,
+		CaptureOnlyStatus: captureOnlyStatus,
 
 		// SOCKS5 proxy settings
 		SOCKS5Enabled:              effectiveSocks5Enabled,
@@ -353,6 +363,9 @@ func runHTTPSeal(cmd *cobra.Command, args []string) error {
 	}
 	if cfg.UpstreamServerName != "" {
 		log.Warn("--upstream-server-name applies to every upstream TLS connection; use it only when all intercepted TLS traffic targets the same certificate name")
+	}
+	if cfg.CaptureOnly && !cfg.Quiet {
+		log.Info("Capture-only mode enabled; upstream requests will not be sent")
 	}
 
 	// Initialize certificate authority
@@ -505,6 +518,8 @@ func loadConfigFile(cmd *cobra.Command) error {
 		EnableHTTP:                 enableHTTP,
 		HTTPPort:                   httpPort,
 		ConnectionTimeout:          connectionTimeout,
+		CaptureOnly:                captureOnly,
+		CaptureOnlyStatus:          captureOnlyStatus,
 		SOCKS5Enabled:              socks5Enabled,
 		SOCKS5Address:              socks5Address,
 		SOCKS5Username:             socks5Username,
@@ -552,6 +567,8 @@ func loadConfigFile(cmd *cobra.Command) error {
 	enableHTTP = tempConfig.EnableHTTP
 	httpPort = tempConfig.HTTPPort
 	connectionTimeout = tempConfig.ConnectionTimeout
+	captureOnly = tempConfig.CaptureOnly
+	captureOnlyStatus = tempConfig.CaptureOnlyStatus
 	socks5Enabled = tempConfig.SOCKS5Enabled
 	socks5Address = tempConfig.SOCKS5Address
 	socks5Username = tempConfig.SOCKS5Username
@@ -640,6 +657,9 @@ func validateFlags() error {
 	}
 	if logBodyLimit < 0 {
 		return fmt.Errorf("log-body-limit must be >= 0")
+	}
+	if captureOnlyStatus < 100 || captureOnlyStatus > 599 {
+		return fmt.Errorf("capture-only-status must be a valid HTTP status code (100-599)")
 	}
 	if _, _, err := net.SplitHostPort(upstreamDNS); err != nil {
 		return fmt.Errorf("upstream-dns must be in host:port form: %w", err)

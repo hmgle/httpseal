@@ -359,6 +359,92 @@ func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPRequestsCaptureOnlySkipsUpstreamAndLogsRequest(t *testing.T) {
+	log := &spyTrafficLogger{}
+	cfg := &config.Config{
+		ConnectionTimeout:  1,
+		CaptureOnly:        true,
+		CaptureOnlyStatus:  http.StatusNoContent,
+		NoRedact:           true,
+		CaptureBodyLimit:   1024,
+		DecompressResponse: true,
+	}
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
+
+	upstreamCalled := false
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalled = true
+			return nil, errors.New("upstream should not be called in capture-only mode")
+		}),
+	}
+	server.httpClient = client
+	server.socks5Client = client
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "https")
+		close(done)
+	}()
+
+	request := "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\npayload"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body.Close()
+
+	if upstreamCalled {
+		t.Fatal("expected capture-only mode to skip upstream forwarding")
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 response, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-HTTPSeal-Capture-Only"); got != "true" {
+		t.Fatalf("expected capture-only response header, got %q", got)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected empty response body, got %q", string(body))
+	}
+	if log.trafficCount != 1 {
+		t.Fatalf("expected one logged traffic record, got %d", log.trafficCount)
+	}
+	record := log.records[0]
+	if record.Request.Method != http.MethodPost {
+		t.Fatalf("expected logged method POST, got %s", record.Request.Method)
+	}
+	if record.Request.Body != "payload" {
+		t.Fatalf("expected logged request body, got %q", record.Request.Body)
+	}
+	if record.Response.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected logged status 204, got %d", record.Response.StatusCode)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after capture-only response")
+	}
+}
+
 func TestBuildUpstreamTLSConfigRejectsInvalidCAFile(t *testing.T) {
 	_, err := buildUpstreamTLSConfig(&config.Config{
 		UpstreamCAFile: filepath.Join(t.TempDir(), "missing-ca.pem"),

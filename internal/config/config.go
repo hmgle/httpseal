@@ -45,6 +45,8 @@ type Config struct {
 
 	// Connection settings
 	ConnectionTimeout int // Client connection idle timeout in seconds (default 30)
+	CaptureOnly       bool
+	CaptureOnlyStatus int // Synthetic status code returned when capture-only mode is enabled
 
 	// SOCKS5 proxy settings
 	SOCKS5Enabled              bool   // Enable SOCKS5 proxy for upstream connections
@@ -102,7 +104,9 @@ type FileConfig struct {
 	HTTPPort   *int  `json:"http_port,omitempty"`
 
 	// Connection settings
-	ConnectionTimeout *int `json:"connection_timeout,omitempty"`
+	ConnectionTimeout *int  `json:"connection_timeout,omitempty"`
+	CaptureOnly       *bool `json:"capture_only,omitempty"`
+	CaptureOnlyStatus *int  `json:"capture_only_status,omitempty"`
 
 	// SOCKS5 proxy settings
 	SOCKS5Enabled              *bool   `json:"socks5_enabled,omitempty"`
@@ -236,6 +240,8 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 
 	// Connection settings
 	applyInt("connection-timeout", fileConfig.ConnectionTimeout, &c.ConnectionTimeout)
+	applyBool("capture-only", fileConfig.CaptureOnly, &c.CaptureOnly)
+	applyInt("capture-only-status", fileConfig.CaptureOnlyStatus, &c.CaptureOnlyStatus)
 
 	// SOCKS5 proxy settings
 	applyBool("socks5", fileConfig.SOCKS5Enabled, &c.SOCKS5Enabled)

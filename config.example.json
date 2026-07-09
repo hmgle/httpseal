@@ -10,6 +10,8 @@
   "enable_http": true,
   "http_port": 80,
   "connection_timeout": 30,
+  "capture_only": false,
+  "capture_only_status": 204,
   "socks5_enabled": false,
   "socks5_address": "127.0.0.1:1080",
   "socks5_username": "",
