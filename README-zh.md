@@ -61,6 +61,9 @@ httpseal --enable-http -- curl http://httpbin.org/get
 # 只捕获请求，不连接真实上游。
 httpseal --capture-only -- curl https://example.invalid
 
+# 捕获请求，并由本地 responder 返回响应。
+httpseal --capture-only-upstream http://127.0.0.1:8080 -- curl https://example.invalid
+
 # 写入结构化流量日志。
 httpseal -o traffic.json --format json -- curl https://httpbin.org/get
 httpseal -o traffic.har --format har -- curl https://api.github.com/users/octocat
@@ -86,7 +89,7 @@ httpseal --config ./config.json --log-level minimal -- curl https://httpbin.org/
 4. 目标命令的 DNS 查询会经过 HTTPSeal 的 DNS server。
 5. 域名会被映射到 loopback 地址，访问 443 或可选的 80 端口时会进入 HTTPSeal 的本地代理。
 6. HTTPS 连接会收到由 HTTPSeal CA 签发的动态证书。目标进程通过隔离的 CA bundle 信任该 CA。
-7. HTTPSeal 将请求转发到真实上游服务器，记录交换内容，并把上游响应返回给目标进程。在 capture-only 模式下，它只记录请求，并返回本地合成响应，不连接真实上游。
+7. HTTPSeal 将请求转发到真实上游服务器，记录交换内容，并把上游响应返回给目标进程。在 capture-only 模式下，它只记录请求，并返回本地合成响应或指定 responder 的响应，不连接原始目标。
 
 默认只拦截 HTTPS。需要拦截明文 HTTP 时，使用 `--enable-http`。
 
@@ -97,9 +100,14 @@ httpseal --config ./config.json --log-level minimal -- curl https://httpbin.org/
 ```bash
 httpseal --capture-only -- curl https://example.invalid
 httpseal --capture-only --capture-only-status 200 -- curl https://example.invalid
+httpseal --capture-only-upstream http://127.0.0.1:8080 -- curl https://example.invalid/api
 ```
 
-默认合成响应是 `204 No Content`。Capture-only 模式和普通 HTTPS 拦截有相同前提：目标进程必须使用 HTTPSeal 准备的 DNS，并信任隔离环境里的 HTTPSeal CA。
+默认合成响应是 `204 No Content`。设置 `--capture-only-upstream` 也会启用 capture-only 行为。HTTPSeal 会把捕获到的请求转发到该 HTTP/HTTPS responder，并把 responder 的响应返回给目标进程。原始 path 和 query 会追加到 responder URL 后面，所以 `--capture-only-upstream http://127.0.0.1:8080/mock` 会把 `/api?x=1` 映射为 `http://127.0.0.1:8080/mock/api?x=1`。
+
+默认情况下，转发给 responder 的请求使用 responder 地址作为 `Host`，并附带 `X-HTTPSeal-Original-Host`、`X-HTTPSeal-Original-Scheme` 和 `X-HTTPSeal-Original-URL`。如果 responder 需要收到原始 `Host`，使用 `--capture-only-preserve-host`。
+
+Capture-only 模式和普通 HTTPS 拦截有相同前提：目标进程必须使用 HTTPSeal 准备的 DNS，并信任隔离环境里的 HTTPSeal CA。
 
 ## 配置
 
@@ -134,6 +142,8 @@ httpseal --config ./config.json -- curl https://httpbin.org/get
   "connection_timeout": 30,
   "capture_only": false,
   "capture_only_status": 204,
+  "capture_only_upstream": "",
+  "capture_only_preserve_host": false,
   "socks5_enabled": false,
   "socks5_address": "127.0.0.1:1080",
   "socks5_username": "",
@@ -275,6 +285,8 @@ HTTP 拦截:
       --http-port int                   HTTP 代理端口 (默认 80)
       --capture-only                    捕获请求并返回合成响应，不连接真实上游
       --capture-only-status int         capture-only 模式返回的 HTTP status code (默认 204)
+      --capture-only-upstream string    把捕获到的请求转发到这个 HTTP/HTTPS responder，而不是返回合成响应
+      --capture-only-preserve-host      转发到 capture-only upstream 时保留原始 Host header
 
 SOCKS5 和上游 TLS:
       --socks5                          使用默认地址启用 SOCKS5 (127.0.0.1:1080)

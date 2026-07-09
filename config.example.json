@@ -12,6 +12,8 @@
   "connection_timeout": 30,
   "capture_only": false,
   "capture_only_status": 204,
+  "capture_only_upstream": "",
+  "capture_only_preserve_host": false,
   "socks5_enabled": false,
   "socks5_address": "127.0.0.1:1080",
   "socks5_username": "",

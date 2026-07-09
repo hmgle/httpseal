@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -330,18 +331,48 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 
 		if s.config.CaptureOnly {
 			startTime := time.Now()
-			resp, responseBody := s.newCaptureOnlyResponse(req)
+			resp, err := s.captureOnlyResponse(req, realDomain, scheme, requestBody)
 			duration := time.Since(startTime)
+
+			if err != nil {
+				s.logger.Error("Failed to handle capture-only request for %s: %v", realDomain, err)
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to reach capture-only upstream.", err)
+				break
+			}
+
+			responseBody, err := spoolBody(resp.Body, int64(s.config.CaptureBodyLimit))
+			if err != nil {
+				s.logger.Error("Failed to spool capture-only response body: %v", err)
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to capture upstream response.", err)
+				break
+			}
 
 			s.emitTraffic(req, resp, realDomain, scheme, duration, requestBody, responseBody)
 
+			s.normalizeResponseForHTTP11(resp, responseBody.size)
+			resp.Body, err = openBodyCaptureReader(responseBody)
+			if err != nil {
+				s.logger.Error("Failed to reopen capture-only response body for client write: %v", err)
+				if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+					s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
+				}
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to replay captured upstream response.", err)
+				break
+			}
 			if err := resp.Write(conn); err != nil {
 				s.logger.Error("Failed to write capture-only response: %v", err)
+			}
+			if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
 			}
 			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
 				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
 			}
-			break
+			if req.Close || resp.Close {
+				s.logger.Debug("Closing connection as requested by headers.")
+				break
+			}
+			continue
 		}
 
 		// Forward the request to the real server
@@ -468,7 +499,14 @@ func (s *Server) respondWithProxyError(conn net.Conn, req *http.Request, realDom
 	}
 }
 
-func (s *Server) newCaptureOnlyResponse(req *http.Request) (*http.Response, *bodyCapture) {
+func (s *Server) captureOnlyResponse(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
+	if s.config.CaptureOnlyUpstream != "" {
+		return s.forwardCaptureOnlyRequest(req, realDomain, scheme, requestBody)
+	}
+	return s.newCaptureOnlyResponse(req), nil
+}
+
+func (s *Server) newCaptureOnlyResponse(req *http.Request) *http.Response {
 	statusCode := s.config.CaptureOnlyStatus
 	if statusCode == 0 {
 		statusCode = http.StatusNoContent
@@ -490,7 +528,7 @@ func (s *Server) newCaptureOnlyResponse(req *http.Request) (*http.Response, *bod
 	resp.Header.Set("Connection", "close")
 	resp.Header.Set("X-HTTPSeal-Capture-Only", "true")
 
-	return resp, &bodyCapture{}
+	return resp
 }
 
 func formatHTTPStatus(statusCode int) string {
@@ -547,38 +585,15 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 
 // forwardRequest forwards the request to the real server
 func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody *bodyCapture, scheme string) (*http.Response, error) {
-	var body io.Reader
-	if requestBody != nil {
-		reader, err := openBodyCaptureReader(requestBody)
-		if err != nil {
-			return nil, fmt.Errorf("open captured request body: %w", err)
-		}
-		body = reader
-	}
+	targetURL := *req.URL
+	targetURL.Host = realDomain
+	targetURL.Scheme = scheme
 
-	// Create a new request to avoid modifying the original
-	newReq, err := http.NewRequest(req.Method, req.URL.String(), body)
+	newReq, err := newOutboundRequest(req, requestBody, &targetURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new request: %w", err)
+		return nil, err
 	}
-
-	// Copy headers
-	for name, values := range req.Header {
-		for _, value := range values {
-			newReq.Header.Add(name, value)
-		}
-	}
-
-	// Update the request to target the real domain
 	newReq.Host = realDomain
-	newReq.URL.Host = realDomain
-	newReq.URL.Scheme = scheme
-	if requestBody != nil && requestBody.size > 0 {
-		newReq.ContentLength = requestBody.size
-	}
-
-	// Clear RequestURI as it's not allowed in client requests
-	newReq.RequestURI = ""
 
 	// Choose the appropriate, pre-configured HTTP client
 	var client *http.Client
@@ -590,6 +605,121 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	}
 
 	return client.Do(newReq)
+}
+
+func (s *Server) forwardCaptureOnlyRequest(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
+	targetURL, err := captureOnlyTargetURL(s.config.CaptureOnlyUpstream, req.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	newReq, err := newOutboundRequest(req, requestBody, targetURL)
+	if err != nil {
+		return nil, err
+	}
+	if s.config.CaptureOnlyPreserveHost {
+		newReq.Host = req.Host
+	} else {
+		newReq.Host = targetURL.Host
+	}
+	newReq.Header.Set("X-HTTPSeal-Original-Host", firstNonEmpty(req.Host, realDomain))
+	newReq.Header.Set("X-HTTPSeal-Original-Scheme", scheme)
+	newReq.Header.Set("X-HTTPSeal-Original-URL", originalRequestURL(req, realDomain, scheme))
+	newReq.Header.Set("X-HTTPSeal-Capture-Only", "upstream")
+
+	s.logger.Debug("Forwarding capture-only request for %s to %s", realDomain, targetURL.String())
+	return s.httpClient.Do(newReq)
+}
+
+func newOutboundRequest(req *http.Request, requestBody *bodyCapture, targetURL *url.URL) (*http.Request, error) {
+	var body io.Reader
+	if requestBody != nil {
+		reader, err := openBodyCaptureReader(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("open captured request body: %w", err)
+		}
+		body = reader
+	}
+
+	newReq, err := http.NewRequest(req.Method, targetURL.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new request: %w", err)
+	}
+
+	for name, values := range req.Header {
+		for _, value := range values {
+			newReq.Header.Add(name, value)
+		}
+	}
+
+	if requestBody != nil && requestBody.size > 0 {
+		newReq.ContentLength = requestBody.size
+	}
+
+	newReq.RequestURI = ""
+	return newReq, nil
+}
+
+func captureOnlyTargetURL(baseRawURL string, requestURL *url.URL) (*url.URL, error) {
+	base, err := url.Parse(baseRawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse capture-only upstream URL: %w", err)
+	}
+	if base.Scheme != "http" && base.Scheme != "https" {
+		return nil, fmt.Errorf("capture-only upstream scheme must be http or https")
+	}
+	if base.Host == "" {
+		return nil, fmt.Errorf("capture-only upstream must include a host")
+	}
+
+	target := *base
+	target.Path = joinURLPath(base.Path, requestURL.Path)
+	if target.RawQuery == "" || requestURL.RawQuery == "" {
+		target.RawQuery += requestURL.RawQuery
+	} else {
+		target.RawQuery += "&" + requestURL.RawQuery
+	}
+	target.Fragment = ""
+	target.RawPath = ""
+	return &target, nil
+}
+
+func joinURLPath(basePath, requestPath string) string {
+	if basePath == "" || basePath == "/" {
+		if requestPath == "" {
+			return "/"
+		}
+		return requestPath
+	}
+	if requestPath == "" || requestPath == "/" {
+		return basePath
+	}
+	baseHasSlash := strings.HasSuffix(basePath, "/")
+	requestHasSlash := strings.HasPrefix(requestPath, "/")
+	switch {
+	case baseHasSlash && requestHasSlash:
+		return basePath + requestPath[1:]
+	case !baseHasSlash && !requestHasSlash:
+		return basePath + "/" + requestPath
+	default:
+		return basePath + requestPath
+	}
+}
+
+func originalRequestURL(req *http.Request, realDomain, scheme string) string {
+	originalURL := *req.URL
+	originalURL.Scheme = scheme
+	originalURL.Host = firstNonEmpty(req.Host, realDomain)
+	return originalURL.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // createTrafficRecord converts captured request/response data into a traffic record.

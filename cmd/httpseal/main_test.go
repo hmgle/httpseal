@@ -144,3 +144,79 @@ func TestValidateFlagsRejectsInvalidCaptureOnlyStatus(t *testing.T) {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
+
+func TestValidateFlagsRejectsInvalidCaptureOnlyUpstream(t *testing.T) {
+	oldUpstreamDNS := upstreamDNS
+	oldOutputFormat := outputFormat
+	oldLogLevel := logLevel
+	oldQuiet := quiet
+	oldOutputFile := outputFile
+	oldCaptureOnlyStatus := captureOnlyStatus
+	oldCaptureOnlyUpstream := captureOnlyUpstream
+	oldCaptureOnlyPreserveHost := captureOnlyPreserveHost
+	t.Cleanup(func() {
+		upstreamDNS = oldUpstreamDNS
+		outputFormat = oldOutputFormat
+		logLevel = oldLogLevel
+		quiet = oldQuiet
+		outputFile = oldOutputFile
+		captureOnlyStatus = oldCaptureOnlyStatus
+		captureOnlyUpstream = oldCaptureOnlyUpstream
+		captureOnlyPreserveHost = oldCaptureOnlyPreserveHost
+	})
+
+	upstreamDNS = "8.8.8.8:53"
+	outputFormat = "text"
+	logLevel = "normal"
+	quiet = false
+	outputFile = ""
+	captureOnlyStatus = 204
+	captureOnlyUpstream = "ftp://127.0.0.1:8080"
+	captureOnlyPreserveHost = false
+
+	err := validateFlags()
+	if err == nil {
+		t.Fatal("expected validation to fail for invalid capture-only upstream")
+	}
+	if !strings.Contains(err.Error(), "capture-only-upstream") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidateFlagsRequiresUpstreamForCaptureOnlyPreserveHost(t *testing.T) {
+	oldUpstreamDNS := upstreamDNS
+	oldOutputFormat := outputFormat
+	oldLogLevel := logLevel
+	oldQuiet := quiet
+	oldOutputFile := outputFile
+	oldCaptureOnlyStatus := captureOnlyStatus
+	oldCaptureOnlyUpstream := captureOnlyUpstream
+	oldCaptureOnlyPreserveHost := captureOnlyPreserveHost
+	t.Cleanup(func() {
+		upstreamDNS = oldUpstreamDNS
+		outputFormat = oldOutputFormat
+		logLevel = oldLogLevel
+		quiet = oldQuiet
+		outputFile = oldOutputFile
+		captureOnlyStatus = oldCaptureOnlyStatus
+		captureOnlyUpstream = oldCaptureOnlyUpstream
+		captureOnlyPreserveHost = oldCaptureOnlyPreserveHost
+	})
+
+	upstreamDNS = "8.8.8.8:53"
+	outputFormat = "text"
+	logLevel = "normal"
+	quiet = false
+	outputFile = ""
+	captureOnlyStatus = 204
+	captureOnlyUpstream = ""
+	captureOnlyPreserveHost = true
+
+	err := validateFlags()
+	if err == nil {
+		t.Fatal("expected validation to fail without capture-only upstream")
+	}
+	if !strings.Contains(err.Error(), "capture-only-preserve-host") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}

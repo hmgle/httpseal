@@ -10,11 +10,13 @@ func TestMergeWithFileConfigHonorsChangedFlags(t *testing.T) {
 		CaptureOnlyStatus:  204,
 	}
 	fileCfg := &FileConfig{
-		EnableHTTP:         boolPtr(true),
-		FileLogLevel:       stringPtr("verbose"),
-		DecompressResponse: boolPtr(false),
-		CaptureOnly:        boolPtr(true),
-		CaptureOnlyStatus:  intPtr(202),
+		EnableHTTP:              boolPtr(true),
+		FileLogLevel:            stringPtr("verbose"),
+		DecompressResponse:      boolPtr(false),
+		CaptureOnly:             boolPtr(true),
+		CaptureOnlyStatus:       intPtr(202),
+		CaptureOnlyUpstream:     stringPtr("http://127.0.0.1:8080"),
+		CaptureOnlyPreserveHost: boolPtr(true),
 	}
 
 	cfg.MergeWithFileConfig(fileCfg, func(name string) bool {
@@ -35,6 +37,12 @@ func TestMergeWithFileConfigHonorsChangedFlags(t *testing.T) {
 	}
 	if cfg.CaptureOnlyStatus != 202 {
 		t.Fatalf("expected capture_only_status from file to apply, got %d", cfg.CaptureOnlyStatus)
+	}
+	if cfg.CaptureOnlyUpstream != "http://127.0.0.1:8080" {
+		t.Fatalf("expected capture_only_upstream from file to apply, got %q", cfg.CaptureOnlyUpstream)
+	}
+	if !cfg.CaptureOnlyPreserveHost {
+		t.Fatal("expected capture_only_preserve_host from file to apply")
 	}
 }
 

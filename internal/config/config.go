@@ -44,9 +44,11 @@ type Config struct {
 	HTTPPort   int  // HTTP proxy port (default 80)
 
 	// Connection settings
-	ConnectionTimeout int // Client connection idle timeout in seconds (default 30)
-	CaptureOnly       bool
-	CaptureOnlyStatus int // Synthetic status code returned when capture-only mode is enabled
+	ConnectionTimeout       int // Client connection idle timeout in seconds (default 30)
+	CaptureOnly             bool
+	CaptureOnlyStatus       int    // Synthetic status code returned when capture-only mode is enabled
+	CaptureOnlyUpstream     string // Optional responder upstream used instead of a synthetic response
+	CaptureOnlyPreserveHost bool   // Preserve the original Host header for capture-only upstream
 
 	// SOCKS5 proxy settings
 	SOCKS5Enabled              bool   // Enable SOCKS5 proxy for upstream connections
@@ -104,9 +106,11 @@ type FileConfig struct {
 	HTTPPort   *int  `json:"http_port,omitempty"`
 
 	// Connection settings
-	ConnectionTimeout *int  `json:"connection_timeout,omitempty"`
-	CaptureOnly       *bool `json:"capture_only,omitempty"`
-	CaptureOnlyStatus *int  `json:"capture_only_status,omitempty"`
+	ConnectionTimeout       *int    `json:"connection_timeout,omitempty"`
+	CaptureOnly             *bool   `json:"capture_only,omitempty"`
+	CaptureOnlyStatus       *int    `json:"capture_only_status,omitempty"`
+	CaptureOnlyUpstream     *string `json:"capture_only_upstream,omitempty"`
+	CaptureOnlyPreserveHost *bool   `json:"capture_only_preserve_host,omitempty"`
 
 	// SOCKS5 proxy settings
 	SOCKS5Enabled              *bool   `json:"socks5_enabled,omitempty"`
@@ -242,6 +246,8 @@ func (c *Config) MergeWithFileConfig(fileConfig *FileConfig, isFlagChanged func(
 	applyInt("connection-timeout", fileConfig.ConnectionTimeout, &c.ConnectionTimeout)
 	applyBool("capture-only", fileConfig.CaptureOnly, &c.CaptureOnly)
 	applyInt("capture-only-status", fileConfig.CaptureOnlyStatus, &c.CaptureOnlyStatus)
+	applyString("capture-only-upstream", fileConfig.CaptureOnlyUpstream, &c.CaptureOnlyUpstream)
+	applyBool("capture-only-preserve-host", fileConfig.CaptureOnlyPreserveHost, &c.CaptureOnlyPreserveHost)
 
 	// SOCKS5 proxy settings
 	applyBool("socks5", fileConfig.SOCKS5Enabled, &c.SOCKS5Enabled)

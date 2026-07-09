@@ -50,6 +50,8 @@ complete -c httpseal -l http-port -d "HTTP proxy port" -xa "$http_ports"
 complete -c httpseal -l connection-timeout -d "Client connection idle timeout in seconds" -xa "$timeout_values"
 complete -c httpseal -l capture-only -d "Capture requests and return a synthetic response without contacting upstream servers"
 complete -c httpseal -l capture-only-status -d "HTTP status code returned in capture-only mode" -xa "$status_codes"
+complete -c httpseal -l capture-only-upstream -d "Forward captured requests to this HTTP/HTTPS responder"
+complete -c httpseal -l capture-only-preserve-host -d "Preserve the original Host header for capture-only upstream"
 
 # SOCKS5 proxy settings
 complete -c httpseal -l socks5 -d "Enable SOCKS5 proxy with default address"
