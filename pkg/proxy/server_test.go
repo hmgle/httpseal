@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -356,6 +357,367 @@ func TestHandleHTTPRequestsReturnsBadGatewayOnUpstreamError(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("proxy did not finish after writing 502 response")
+	}
+}
+
+func TestHandleHTTPRequestsCaptureOnlySkipsUpstreamAndLogsRequest(t *testing.T) {
+	log := &spyTrafficLogger{}
+	cfg := &config.Config{
+		ConnectionTimeout:  1,
+		CaptureMode:        config.CaptureModeSynthetic,
+		CaptureOnly:        true,
+		CaptureOnlyStatus:  http.StatusNoContent,
+		NoRedact:           true,
+		CaptureBodyLimit:   1024,
+		DecompressResponse: true,
+	}
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
+
+	upstreamCalled := false
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalled = true
+			return nil, errors.New("upstream should not be called in capture-only mode")
+		}),
+	}
+	server.httpClient = client
+	server.socks5Client = client
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "https")
+		close(done)
+	}()
+
+	request := "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\npayload"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body.Close()
+
+	if upstreamCalled {
+		t.Fatal("expected capture-only mode to skip upstream forwarding")
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 response, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-HTTPSeal-Capture-Only"); got != "" {
+		t.Fatalf("expected no HTTPSeal response header, got %q", got)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected empty response body, got %q", string(body))
+	}
+	if log.trafficCount != 1 {
+		t.Fatalf("expected one logged traffic record, got %d", log.trafficCount)
+	}
+	record := log.records[0]
+	if record.Request.Method != http.MethodPost {
+		t.Fatalf("expected logged method POST, got %s", record.Request.Method)
+	}
+	if record.Request.Body != "payload" {
+		t.Fatalf("expected logged request body, got %q", record.Request.Body)
+	}
+	if record.Response.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected logged status 204, got %d", record.Response.StatusCode)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after capture-only response")
+	}
+}
+
+func TestHandleHTTPRequestsCaptureOnlySyntheticKeepsAlive(t *testing.T) {
+	log := &spyTrafficLogger{}
+	cfg := &config.Config{
+		ConnectionTimeout:  1,
+		CaptureMode:        config.CaptureModeSynthetic,
+		CaptureOnly:        true,
+		CaptureOnlyStatus:  http.StatusNoContent,
+		NoRedact:           true,
+		CaptureBodyLimit:   1024,
+		DecompressResponse: true,
+	}
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "https")
+		close(done)
+	}()
+
+	if _, err := clientConn.Write([]byte("GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n")); err != nil {
+		t.Fatalf("write first request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	firstResp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read first response: %v", err)
+	}
+	if _, err := io.ReadAll(firstResp.Body); err != nil {
+		t.Fatalf("read first response body: %v", err)
+	}
+	firstResp.Body.Close()
+
+	if firstResp.Close {
+		t.Fatal("expected first synthetic response to keep the connection alive")
+	}
+	if strings.EqualFold(firstResp.Header.Get("Connection"), "close") {
+		t.Fatal("expected first synthetic response not to send Connection: close")
+	}
+
+	if _, err := clientConn.Write([]byte("GET /second HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write second request: %v", err)
+	}
+
+	secondResp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read second response: %v", err)
+	}
+	if _, err := io.ReadAll(secondResp.Body); err != nil {
+		t.Fatalf("read second response body: %v", err)
+	}
+	secondResp.Body.Close()
+
+	if !secondResp.Close {
+		t.Fatal("expected second synthetic response to honor client close")
+	}
+	if log.trafficCount != 2 {
+		t.Fatalf("expected two logged traffic records, got %d", log.trafficCount)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after close request")
+	}
+}
+
+func TestHandleHTTPRequestsCaptureOnlyUpstreamUsesResponder(t *testing.T) {
+	var upstreamMethod string
+	var upstreamHost string
+	var upstreamPath string
+	var upstreamRawQuery string
+	var upstreamBody string
+	var originalHost string
+	var originalScheme string
+	var originalURL string
+	var captureOnlyHeader string
+
+	responder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		upstreamMethod = r.Method
+		upstreamHost = r.Host
+		upstreamPath = r.URL.Path
+		upstreamRawQuery = r.URL.RawQuery
+		upstreamBody = string(body)
+		originalHost = r.Header.Get("X-HTTPSeal-Original-Host")
+		originalScheme = r.Header.Get("X-HTTPSeal-Original-Scheme")
+		originalURL = r.Header.Get("X-HTTPSeal-Original-URL")
+		captureOnlyHeader = r.Header.Get("X-HTTPSeal-Capture-Only")
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("mocked response"))
+	}))
+	defer responder.Close()
+	upstreamRawURL := responder.URL + "/mock?base=1"
+	upstreamURL, err := config.ParseCaptureOnlyUpstreamURL(upstreamRawURL)
+	if err != nil {
+		t.Fatalf("parse capture-only upstream: %v", err)
+	}
+
+	log := &spyTrafficLogger{}
+	cfg := &config.Config{
+		ConnectionTimeout:      1,
+		CaptureMode:            config.CaptureModeUpstream,
+		CaptureOnly:            true,
+		CaptureOnlyUpstream:    upstreamRawURL,
+		CaptureOnlyUpstreamURL: upstreamURL,
+		NoRedact:               true,
+		CaptureBodyLimit:       1024,
+		DecompressResponse:     true,
+		CaptureOnlyStatus:      http.StatusNoContent,
+	}
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "https")
+		close(done)
+	}()
+
+	request := "POST /api/users?x=1 HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\npayload"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected responder status 201, got %d", resp.StatusCode)
+	}
+	if string(body) != "mocked response" {
+		t.Fatalf("expected responder body, got %q", string(body))
+	}
+	if upstreamMethod != http.MethodPost {
+		t.Fatalf("expected upstream method POST, got %s", upstreamMethod)
+	}
+	if upstreamHost != strings.TrimPrefix(responder.URL, "http://") {
+		t.Fatalf("expected upstream host to target responder, got %q", upstreamHost)
+	}
+	if upstreamPath != "/mock/api/users" {
+		t.Fatalf("expected joined upstream path, got %q", upstreamPath)
+	}
+	if upstreamRawQuery != "base=1&x=1" {
+		t.Fatalf("expected combined upstream query, got %q", upstreamRawQuery)
+	}
+	if upstreamBody != "payload" {
+		t.Fatalf("expected upstream request body, got %q", upstreamBody)
+	}
+	if originalHost != "example.com" {
+		t.Fatalf("expected original host header, got %q", originalHost)
+	}
+	if originalScheme != "https" {
+		t.Fatalf("expected original scheme header, got %q", originalScheme)
+	}
+	if originalURL != "https://example.com/api/users?x=1" {
+		t.Fatalf("expected original URL header, got %q", originalURL)
+	}
+	if captureOnlyHeader != "upstream" {
+		t.Fatalf("expected capture-only upstream header, got %q", captureOnlyHeader)
+	}
+	if log.trafficCount != 1 {
+		t.Fatalf("expected one logged traffic record, got %d", log.trafficCount)
+	}
+	record := log.records[0]
+	if record.Response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected logged responder status 201, got %d", record.Response.StatusCode)
+	}
+	if record.Response.Body != "mocked response" {
+		t.Fatalf("expected logged responder body, got %q", record.Response.Body)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after capture-only upstream response")
+	}
+}
+
+func TestHandleHTTPRequestsCaptureOnlyUpstreamCanPreserveHost(t *testing.T) {
+	var upstreamHost string
+	responder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHost = r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer responder.Close()
+	upstreamURL, err := config.ParseCaptureOnlyUpstreamURL(responder.URL)
+	if err != nil {
+		t.Fatalf("parse capture-only upstream: %v", err)
+	}
+
+	log := &spyTrafficLogger{}
+	cfg := &config.Config{
+		ConnectionTimeout:       1,
+		CaptureMode:             config.CaptureModeUpstream,
+		CaptureOnly:             true,
+		CaptureOnlyUpstream:     responder.URL,
+		CaptureOnlyUpstreamURL:  upstreamURL,
+		CaptureOnlyPreserveHost: true,
+		CaptureOnlyStatus:       http.StatusNoContent,
+		NoRedact:                true,
+		CaptureBodyLimit:        1024,
+		DecompressResponse:      true,
+	}
+	server, err := NewHTTPServer(80, nil, log, nil, cfg)
+	if err != nil {
+		t.Fatalf("new http server: %v", err)
+	}
+
+	clientConn, proxyConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer proxyConn.Close()
+		server.handleHTTPRequests(proxyConn, "example.com", "https")
+		close(done)
+	}()
+
+	request := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	resp.Body.Close()
+
+	if upstreamHost != "example.com" {
+		t.Fatalf("expected original host to be preserved, got %q", upstreamHost)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after capture-only upstream response")
 	}
 }
 

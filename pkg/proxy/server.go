@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,19 +27,21 @@ import (
 
 // Server implements an HTTPS/HTTP proxy server for traffic interception
 type Server struct {
-	port          int
-	listener      net.Listener
-	ca            *cert.CA
-	dnsServer     *dns.Server
-	logger        logger.Logger
-	trafficLogger logger.TrafficLogger
-	mirrorServer  *mirror.Server
-	wg            sync.WaitGroup
-	stopCh        chan struct{}
-	isHTTPS       bool           // true for HTTPS, false for HTTP
-	config        *config.Config // Configuration for SOCKS5 proxy support
-	httpClient    *http.Client   // Standard HTTP client
-	socks5Client  *http.Client   // SOCKS5-enabled HTTP client
+	port                int
+	listener            net.Listener
+	ca                  *cert.CA
+	dnsServer           *dns.Server
+	logger              logger.Logger
+	trafficLogger       logger.TrafficLogger
+	mirrorServer        *mirror.Server
+	wg                  sync.WaitGroup
+	stopCh              chan struct{}
+	isHTTPS             bool           // true for HTTPS, false for HTTP
+	config              *config.Config // Configuration for SOCKS5 proxy support
+	httpClient          *http.Client   // Standard HTTP client
+	socks5Client        *http.Client   // SOCKS5-enabled HTTP client
+	captureMode         config.CaptureMode
+	captureOnlyUpstream *url.URL
 }
 
 // NewServer creates a new HTTPS proxy server
@@ -46,18 +49,23 @@ func NewServer(port int, ca *cert.CA, dnsServer *dns.Server, trafficLogger logge
 	if err := prepareBodySpoolDir(); err != nil {
 		return nil, err
 	}
-	s := &Server{
-		port:          port,
-		ca:            ca,
-		dnsServer:     dnsServer,
-		logger:        trafficLogger, // TrafficLogger implements Logger interface
-		trafficLogger: trafficLogger,
-		mirrorServer:  mirrorServer,
-		stopCh:        make(chan struct{}),
-		isHTTPS:       true,
-		config:        cfg,
+	captureMode, captureOnlyUpstream, err := resolveCaptureOnlyConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
-	var err error
+	s := &Server{
+		port:                port,
+		ca:                  ca,
+		dnsServer:           dnsServer,
+		logger:              trafficLogger, // TrafficLogger implements Logger interface
+		trafficLogger:       trafficLogger,
+		mirrorServer:        mirrorServer,
+		stopCh:              make(chan struct{}),
+		isHTTPS:             true,
+		config:              cfg,
+		captureMode:         captureMode,
+		captureOnlyUpstream: captureOnlyUpstream,
+	}
 	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
 	if err != nil {
 		return nil, err
@@ -74,18 +82,23 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 	if err := prepareBodySpoolDir(); err != nil {
 		return nil, err
 	}
-	s := &Server{
-		port:          port,
-		ca:            nil, // No CA needed for HTTP
-		dnsServer:     dnsServer,
-		logger:        trafficLogger, // TrafficLogger implements Logger interface
-		trafficLogger: trafficLogger,
-		mirrorServer:  mirrorServer,
-		stopCh:        make(chan struct{}),
-		isHTTPS:       false,
-		config:        cfg,
+	captureMode, captureOnlyUpstream, err := resolveCaptureOnlyConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
-	var err error
+	s := &Server{
+		port:                port,
+		ca:                  nil, // No CA needed for HTTP
+		dnsServer:           dnsServer,
+		logger:              trafficLogger, // TrafficLogger implements Logger interface
+		trafficLogger:       trafficLogger,
+		mirrorServer:        mirrorServer,
+		stopCh:              make(chan struct{}),
+		isHTTPS:             false,
+		config:              cfg,
+		captureMode:         captureMode,
+		captureOnlyUpstream: captureOnlyUpstream,
+	}
 	s.httpClient, err = createHTTPClient(cfg, false, trafficLogger)
 	if err != nil {
 		return nil, err
@@ -95,6 +108,43 @@ func NewHTTPServer(port int, dnsServer *dns.Server, trafficLogger logger.Traffic
 		return nil, err
 	}
 	return s, nil
+}
+
+func resolveCaptureOnlyConfig(cfg *config.Config) (config.CaptureMode, *url.URL, error) {
+	mode := cfg.CaptureMode
+	if mode == config.CaptureModeDisabled {
+		switch {
+		case cfg.CaptureOnlyUpstreamURL != nil || cfg.CaptureOnlyUpstream != "":
+			mode = config.CaptureModeUpstream
+		case cfg.CaptureOnly:
+			mode = config.CaptureModeSynthetic
+		}
+	}
+
+	switch mode {
+	case config.CaptureModeDisabled:
+		cfg.CaptureOnly = false
+		return mode, nil, nil
+	case config.CaptureModeSynthetic:
+		cfg.CaptureOnly = true
+		return mode, nil, nil
+	case config.CaptureModeUpstream:
+		cfg.CaptureOnly = true
+		if cfg.CaptureOnlyUpstreamURL == nil {
+			if cfg.CaptureOnlyUpstream == "" {
+				return mode, nil, fmt.Errorf("capture-only upstream mode requires capture-only-upstream")
+			}
+			parsed, err := config.ParseCaptureOnlyUpstreamURL(cfg.CaptureOnlyUpstream)
+			if err != nil {
+				return mode, nil, err
+			}
+			cfg.CaptureOnlyUpstreamURL = parsed
+		}
+		upstream := *cfg.CaptureOnlyUpstreamURL
+		return mode, &upstream, nil
+	default:
+		return mode, nil, fmt.Errorf("invalid capture mode %q", mode)
+	}
 }
 
 // createHTTPClient creates a reusable HTTP client with optional SOCKS5 proxy
@@ -328,6 +378,52 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			return
 		}
 
+		if s.captureMode.Enabled() {
+			startTime := time.Now()
+			resp, err := s.captureOnlyResponse(req, realDomain, scheme, requestBody)
+			duration := time.Since(startTime)
+
+			if err != nil {
+				s.logger.Error("Failed to handle capture-only request for %s: %v", realDomain, err)
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to reach capture-only upstream.", err)
+				break
+			}
+
+			responseBody, err := spoolBody(resp.Body, int64(s.config.CaptureBodyLimit))
+			if err != nil {
+				s.logger.Error("Failed to spool capture-only response body: %v", err)
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to capture upstream response.", err)
+				break
+			}
+
+			s.emitTraffic(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+
+			s.normalizeResponseForHTTP11(resp, responseBody.size)
+			resp.Body, err = openBodyCaptureReader(responseBody)
+			if err != nil {
+				s.logger.Error("Failed to reopen capture-only response body for client write: %v", err)
+				if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+					s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
+				}
+				s.respondWithProxyError(conn, req, realDomain, scheme, duration, requestBody, http.StatusBadGateway, "Failed to replay captured upstream response.", err)
+				break
+			}
+			if err := resp.Write(conn); err != nil {
+				s.logger.Error("Failed to write capture-only response: %v", err)
+			}
+			if cleanupErr := responseBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up response spool file: %v", cleanupErr)
+			}
+			if cleanupErr := requestBody.Cleanup(); cleanupErr != nil {
+				s.logger.Warn("Failed to clean up request spool file: %v", cleanupErr)
+			}
+			if req.Close || resp.Close {
+				s.logger.Debug("Closing connection as requested by headers.")
+				break
+			}
+			continue
+		}
+
 		// Forward the request to the real server
 		startTime := time.Now()
 		resp, err := s.forwardRequest(req, realDomain, requestBody, scheme)
@@ -347,35 +443,7 @@ func (s *Server) handleHTTPRequests(conn net.Conn, realDomain string, scheme str
 			break
 		}
 
-		trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
-		logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
-
-		// Log the traffic record
-		if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
-			s.logger.Error("Failed to log traffic: %v", err)
-		}
-
-		// Mirror the traffic for Wireshark analysis (if mirror server is enabled)
-		if s.mirrorServer != nil {
-			requestBodyText, reqErr := bodyCaptureString(requestBody)
-			if reqErr != nil {
-				s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
-			}
-			responseBodyText, respErr := bodyCaptureString(responseBody)
-			if respErr != nil {
-				s.logger.Warn("Failed to read response body for mirroring: %v", respErr)
-			}
-			s.mirrorServer.MirrorTraffic(
-				realDomain,
-				req.Method,
-				req.URL.String(),
-				requestBodyText,
-				responseBodyText,
-				resp.StatusCode,
-				req.Header,
-				resp.Header,
-			)
-		}
+		s.emitTraffic(req, resp, realDomain, scheme, duration, requestBody, responseBody)
 
 		// Normalize response to HTTP/1.1 to fix HTTP/2 compatibility issues
 		s.normalizeResponseForHTTP11(resp, responseBody.size)
@@ -480,6 +548,82 @@ func (s *Server) respondWithProxyError(conn net.Conn, req *http.Request, realDom
 	}
 }
 
+func (s *Server) captureOnlyResponse(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
+	switch s.captureMode {
+	case config.CaptureModeUpstream:
+		return s.forwardCaptureOnlyRequest(req, realDomain, scheme, requestBody)
+	case config.CaptureModeSynthetic:
+		return s.newCaptureOnlyResponse(req), nil
+	default:
+		return nil, fmt.Errorf("capture-only response requested while capture mode is %q", s.captureMode)
+	}
+}
+
+func (s *Server) newCaptureOnlyResponse(req *http.Request) *http.Response {
+	statusCode := s.config.CaptureOnlyStatus
+	if statusCode == 0 {
+		statusCode = http.StatusNoContent
+	}
+
+	resp := &http.Response{
+		StatusCode:    statusCode,
+		Status:        formatHTTPStatus(statusCode),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader("")),
+		ContentLength: 0,
+		Close:         req.Close,
+		Request:       req,
+	}
+	resp.Header.Set("Content-Length", "0")
+	if req.Close {
+		resp.Header.Set("Connection", "close")
+	}
+
+	return resp
+}
+
+func formatHTTPStatus(statusCode int) string {
+	if text := http.StatusText(statusCode); text != "" {
+		return fmt.Sprintf("%d %s", statusCode, text)
+	}
+	return strconv.Itoa(statusCode)
+}
+
+func (s *Server) emitTraffic(req *http.Request, resp *http.Response, realDomain, scheme string, duration time.Duration, requestBody, responseBody *bodyCapture) {
+	trafficRecord := s.createTrafficRecord(req, resp, realDomain, scheme, duration, requestBody, responseBody)
+	logger.RedactTrafficRecord(trafficRecord, s.config.NoRedact)
+
+	if err := s.trafficLogger.LogTraffic(trafficRecord); err != nil {
+		s.logger.Error("Failed to log traffic: %v", err)
+	}
+
+	if s.mirrorServer == nil {
+		return
+	}
+
+	requestBodyText, reqErr := bodyCaptureString(requestBody)
+	if reqErr != nil {
+		s.logger.Warn("Failed to read request body for mirroring: %v", reqErr)
+	}
+	responseBodyText, respErr := bodyCaptureString(responseBody)
+	if respErr != nil {
+		s.logger.Warn("Failed to read response body for mirroring: %v", respErr)
+	}
+	s.mirrorServer.MirrorTraffic(
+		realDomain,
+		req.Method,
+		req.URL.String(),
+		requestBodyText,
+		responseBodyText,
+		resp.StatusCode,
+		req.Header,
+		resp.Header,
+	)
+}
+
 // createTLSConfig creates TLS configuration with dynamic certificate for the domain
 func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 	cert, err := s.ca.GenerateCertForDomain(domain)
@@ -495,38 +639,15 @@ func (s *Server) createTLSConfig(domain string) (*tls.Config, error) {
 
 // forwardRequest forwards the request to the real server
 func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBody *bodyCapture, scheme string) (*http.Response, error) {
-	var body io.Reader
-	if requestBody != nil {
-		reader, err := openBodyCaptureReader(requestBody)
-		if err != nil {
-			return nil, fmt.Errorf("open captured request body: %w", err)
-		}
-		body = reader
-	}
+	targetURL := *req.URL
+	targetURL.Host = realDomain
+	targetURL.Scheme = scheme
 
-	// Create a new request to avoid modifying the original
-	newReq, err := http.NewRequest(req.Method, req.URL.String(), body)
+	newReq, err := newOutboundRequest(req, requestBody, &targetURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new request: %w", err)
+		return nil, err
 	}
-
-	// Copy headers
-	for name, values := range req.Header {
-		for _, value := range values {
-			newReq.Header.Add(name, value)
-		}
-	}
-
-	// Update the request to target the real domain
 	newReq.Host = realDomain
-	newReq.URL.Host = realDomain
-	newReq.URL.Scheme = scheme
-	if requestBody != nil && requestBody.size > 0 {
-		newReq.ContentLength = requestBody.size
-	}
-
-	// Clear RequestURI as it's not allowed in client requests
-	newReq.RequestURI = ""
 
 	// Choose the appropriate, pre-configured HTTP client
 	var client *http.Client
@@ -538,6 +659,116 @@ func (s *Server) forwardRequest(req *http.Request, realDomain string, requestBod
 	}
 
 	return client.Do(newReq)
+}
+
+func (s *Server) forwardCaptureOnlyRequest(req *http.Request, realDomain, scheme string, requestBody *bodyCapture) (*http.Response, error) {
+	targetURL, err := captureOnlyTargetURL(s.captureOnlyUpstream, req.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	newReq, err := newOutboundRequest(req, requestBody, targetURL)
+	if err != nil {
+		return nil, err
+	}
+	if s.config.CaptureOnlyPreserveHost {
+		newReq.Host = req.Host
+	} else {
+		newReq.Host = targetURL.Host
+	}
+	newReq.Header.Set("X-HTTPSeal-Original-Host", firstNonEmpty(req.Host, realDomain))
+	newReq.Header.Set("X-HTTPSeal-Original-Scheme", scheme)
+	newReq.Header.Set("X-HTTPSeal-Original-URL", originalRequestURL(req, realDomain, scheme))
+	newReq.Header.Set("X-HTTPSeal-Capture-Only", "upstream")
+
+	s.logger.Debug("Forwarding capture-only request for %s to %s", realDomain, targetURL.String())
+	// The capture-only responder is a control-plane endpoint. Keep it direct so
+	// SOCKS5 settings only affect real upstream server traffic.
+	return s.httpClient.Do(newReq)
+}
+
+func newOutboundRequest(req *http.Request, requestBody *bodyCapture, targetURL *url.URL) (*http.Request, error) {
+	var body io.Reader
+	if requestBody != nil {
+		reader, err := openBodyCaptureReader(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("open captured request body: %w", err)
+		}
+		body = reader
+	}
+
+	newReq, err := http.NewRequest(req.Method, targetURL.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new request: %w", err)
+	}
+
+	for name, values := range req.Header {
+		for _, value := range values {
+			newReq.Header.Add(name, value)
+		}
+	}
+
+	if requestBody != nil && requestBody.size > 0 {
+		newReq.ContentLength = requestBody.size
+	}
+
+	newReq.RequestURI = ""
+	return newReq, nil
+}
+
+func captureOnlyTargetURL(base *url.URL, requestURL *url.URL) (*url.URL, error) {
+	if base == nil {
+		return nil, fmt.Errorf("capture-only upstream URL is not configured")
+	}
+
+	target := *base
+	target.Path = joinURLPath(base.Path, requestURL.Path)
+	if target.RawQuery == "" || requestURL.RawQuery == "" {
+		target.RawQuery += requestURL.RawQuery
+	} else {
+		target.RawQuery += "&" + requestURL.RawQuery
+	}
+	target.Fragment = ""
+	target.RawPath = ""
+	return &target, nil
+}
+
+func joinURLPath(basePath, requestPath string) string {
+	if basePath == "" || basePath == "/" {
+		if requestPath == "" {
+			return "/"
+		}
+		return requestPath
+	}
+	if requestPath == "" || requestPath == "/" {
+		return basePath
+	}
+	baseHasSlash := strings.HasSuffix(basePath, "/")
+	requestHasSlash := strings.HasPrefix(requestPath, "/")
+	switch {
+	case baseHasSlash && requestHasSlash:
+		return basePath + requestPath[1:]
+	case !baseHasSlash && !requestHasSlash:
+		return basePath + "/" + requestPath
+	default:
+		return basePath + requestPath
+	}
+}
+
+func originalRequestURL(req *http.Request, realDomain, scheme string) string {
+	originalURL := *req.URL
+	originalURL.Scheme = scheme
+	originalURL.Host = firstNonEmpty(req.Host, realDomain)
+	return originalURL.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // createTrafficRecord converts captured request/response data into a traffic record.

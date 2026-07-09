@@ -22,6 +22,10 @@ _httpseal() {
     '--ca-dir[Certificate authority directory]:directory:_directories' \
     '(-c --config)'{-c,--config}'[Configuration file path]:file:_files' \
     '--connection-timeout[Client connection idle timeout in seconds]:timeout:(30 60 120 300)' \
+    '--capture-only[Capture requests and return a synthetic response without contacting upstream servers]' \
+    '--capture-only-status[HTTP status code returned in capture-only mode]:status:(200 201 202 204 400 404 500 502 503)' \
+    '--capture-only-upstream[Forward captured requests to this HTTP/HTTPS responder]:url:' \
+    '--capture-only-preserve-host[Preserve the original Host header for capture-only upstream]' \
     '--dns-ip[DNS server IP address]:ip:(127.0.53.1 127.0.0.1)' \
     '--dns-port[DNS server port]:port:(53 5353)' \
     '--upstream-dns[Upstream DNS server for forwarded non-hijacked queries]:address:' \
