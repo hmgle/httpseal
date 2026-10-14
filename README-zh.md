@@ -6,7 +6,7 @@ HTTPSeal 是一个 Linux 命令行工具，用于拦截并记录由它启动的�
 
 ## 演示
 
-[![asciicast](https://asciinema.org/a/730013.svg)](https://asciinema.org/a/730013)
+[![asciicast](docs/demo.svg)](https://asciinema.org/a/730013)
 
 > 演示中出现过的凭据均已删除并失效。
 

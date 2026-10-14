@@ -6,7 +6,7 @@ HTTPSeal is a Linux command-line tool for intercepting and logging HTTP and HTTP
 
 ## Demo
 
-[![asciicast](https://asciinema.org/a/730013.svg)](https://asciinema.org/a/730013)
+[![asciicast](docs/demo.svg)](https://asciinema.org/a/730013)
 
 > Any credentials shown in the demo have been removed and invalidated.
 
